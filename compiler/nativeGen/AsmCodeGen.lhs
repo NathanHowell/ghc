@@ -211,12 +211,6 @@ nativeCodeGen dflags h us cmms
                      panic "nativeCodeGen: No NCG for ARM"
                  ArchPPC_64 ->
                      panic "nativeCodeGen: No NCG for PPC 64"
-                 ArchAlpha ->
-                     panic "nativeCodeGen: No NCG for Alpha"
-                 ArchMipseb ->
-                     panic "nativeCodeGen: No NCG for mipseb"
-                 ArchMipsel ->
-                     panic "nativeCodeGen: No NCG for mipsel"
                  ArchUnknown ->
                      panic "nativeCodeGen: No NCG for unknown arch"
 
@@ -531,12 +525,15 @@ makeImportsDoc dflags imports
             (if platformHasGnuNonexecStack (targetPlatform dflags)
              then Pretty.text ".section .note.GNU-stack,\"\",@progbits"
              else Pretty.empty)
+            Pretty.$$
                 -- And just because every other compiler does, lets stick in
                 -- an identifier directive: .ident "GHC x.y.z"
-            Pretty.$$ let compilerIdent = Pretty.text "GHC" Pretty.<+>
-	                                  Pretty.text cProjectVersion
-                       in Pretty.text ".ident" Pretty.<+>
-                          Pretty.doubleQuotes compilerIdent
+            (if platformHasIdentDirective (targetPlatform dflags)
+             then let compilerIdent = Pretty.text "GHC" Pretty.<+>
+	                              Pretty.text cProjectVersion
+                   in Pretty.text ".ident" Pretty.<+>
+                      Pretty.doubleQuotes compilerIdent
+             else Pretty.empty)
 
  where
 	-- Generate "symbol stubs" for all external symbols that might
@@ -885,7 +882,7 @@ cmmStmtConFold stmt
            -> do addr' <- cmmExprConFold JumpReference addr
                  return $ CmmJump addr' regs
 
-	CmmCall target regs args srt returns
+        CmmCall target regs args returns
 	   -> do target' <- case target of
 			      CmmCallee e conv -> do
 			        e' <- cmmExprConFold CallReference e
@@ -894,7 +891,7 @@ cmmStmtConFold stmt
                  args' <- mapM (\(CmmHinted arg hint) -> do
                                   arg' <- cmmExprConFold DataReference arg
                                   return (CmmHinted arg' hint)) args
-	         return $ CmmCall target' regs args' srt returns
+                 return $ CmmCall target' regs args' returns
 
         CmmCondBranch test dest
            -> do test' <- cmmExprConFold DataReference test

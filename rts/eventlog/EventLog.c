@@ -161,7 +161,7 @@ static inline void postBuf(EventsBuf *eb, StgWord8 *buf, nat size)
 }
 
 static inline StgWord64 time_ns(void)
-{ return stat_getElapsedTime() * (1000000000LL/TICKS_PER_SECOND); }
+{ return TimeToNS(stat_getElapsedTime()); }
 
 static inline void postEventTypeNum(EventsBuf *eb, EventTypeNum etNum)
 { postWord16(eb, etNum); }
@@ -298,8 +298,22 @@ initEventLogging(void)
 {
     StgWord8 t, c;
     nat n_caps;
+    char *prog;
 
-    event_log_filename = stgMallocBytes(strlen(prog_name)
+    prog = stgMallocBytes(strlen(prog_name) + 1, "initEventLogging");
+    strcpy(prog, prog_name);
+#ifdef mingw32_HOST_OS
+    // on Windows, drop the .exe suffix if there is one
+    {
+        char *suff;
+        suff = strrchr(prog,'.');
+        if (suff != NULL && !strcmp(suff,".exe")) {
+            *suff = '\0';
+        }
+    }
+#endif
+
+    event_log_filename = stgMallocBytes(strlen(prog)
                                         + 10 /* .%d */
                                         + 10 /* .eventlog */,
                                         "initEventLogging");
@@ -310,14 +324,15 @@ initEventLogging(void)
 
     if (event_log_pid == -1) { // #4512
         // Single process
-        sprintf(event_log_filename, "%s.eventlog", prog_name);
+        sprintf(event_log_filename, "%s.eventlog", prog);
         event_log_pid = getpid();
     } else {
         // Forked process, eventlog already started by the parent
         // before fork
         event_log_pid = getpid();
-        sprintf(event_log_filename, "%s.%d.eventlog", prog_name, event_log_pid);
+        sprintf(event_log_filename, "%s.%d.eventlog", prog, event_log_pid);
     }
+    stgFree(prog);
 
     /* Open event log file for writing. */
     if ((event_log_file = fopen(event_log_filename, "wb")) == NULL) {
@@ -341,12 +356,8 @@ initEventLogging(void)
 #else
     n_caps = 1;
 #endif
-    capEventBuf = stgMallocBytes(n_caps * sizeof(EventsBuf),"initEventLogging");
+    moreCapEventBufs(0,n_caps);
 
-    for (c = 0; c < n_caps; ++c) {
-        // Init buffer for events.
-        initEventsBuf(&capEventBuf[c], EVENT_LOG_SIZE, c);
-    }
     initEventsBuf(&eventBuf, EVENT_LOG_SIZE, (EventCapNo)(-1));
 
     // Write in buffer: the header begin marker.
@@ -415,7 +426,26 @@ endEventLogging(void)
     }
 }
 
-void 
+void
+moreCapEventBufs (nat from, nat to)
+{
+    nat c;
+
+    if (from > 0) {
+        capEventBuf = stgReallocBytes(capEventBuf, to * sizeof(EventsBuf),
+                                      "moreCapEventBufs");
+    } else {
+        capEventBuf = stgMallocBytes(to * sizeof(EventsBuf),
+                                     "moreCapEventBufs");
+    }
+
+    for (c = from; c < to; ++c) {
+        initEventsBuf(&capEventBuf[c], EVENT_LOG_SIZE, c);
+    }
+}
+
+
+void
 freeEventLogging(void)
 {
     StgWord8 c;

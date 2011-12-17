@@ -107,9 +107,9 @@ endif
 ifneq "$(BINDIST)" "YES"
 rts_ffi_objs_stamp = rts/dist/ffi/stamp
 rts_ffi_objs       = rts/dist/ffi/*.o
-$(rts_ffi_objs_stamp): $(libffi_STATIC_LIB) | $$(dir $$@)/.
+$(rts_ffi_objs_stamp): $(libffi_STATIC_LIB) $(TOUCH_DEP) | $$(dir $$@)/.
 	cd rts/dist/ffi && $(AR) x ../../../$(libffi_STATIC_LIB)
-	touch $@
+	"$(TOUCH_CMD)" $@
 
 # This is a little hacky. We don't know the SO version, so we only
 # depend on libffi.so, but copy libffi.so*
@@ -472,7 +472,7 @@ endif
 
 $(eval $(call dependencies,rts,dist,1))
 
-$(rts_dist_depfile_c_asm) : $(ffi_HEADER) $(DTRACEPROBES_H)
+$(rts_dist_depfile_c_asm) : $(libffi_HEADERS) $(DTRACEPROBES_H)
 
 # -----------------------------------------------------------------------------
 # compile dtrace probes if dtrace is supported
@@ -523,6 +523,13 @@ endif
 INSTALL_LIBS += $(ALL_RTS_LIBS)
 INSTALL_LIBS += $(wildcard rts/dist/build/libffi$(soext)*)
 INSTALL_LIBS += $(wildcard rts/dist/build/libffi-5.dll)
+
+install: install_libffi_headers
+
+.PHONY: install_libffi_headers
+install_libffi_headers :
+	$(call INSTALL_DIR,"$(DESTDIR)$(ghcheaderdir)")
+	$(call INSTALL_HEADER,$(INSTALL_OPTS),$(libffi_HEADERS),"$(DESTDIR)$(ghcheaderdir)/")
 
 # -----------------------------------------------------------------------------
 # cleaning

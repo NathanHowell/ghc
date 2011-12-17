@@ -129,12 +129,6 @@ endif
 	@echo 'cGHC_SYSMAN_DIR       = "$(GHC_SYSMAN_DIR)"'                 >> $@
 	@echo 'cDEFAULT_TMPDIR       :: String'                             >> $@
 	@echo 'cDEFAULT_TMPDIR       = "$(DEFAULT_TMPDIR)"'                 >> $@
-	@echo 'cRelocatableBuild     :: Bool'                               >> $@
-ifeq "$(RelocatableBuild)" "YES"
-	@echo 'cRelocatableBuild     = True'                                >> $@
-else
-	@echo 'cRelocatableBuild     = False'                               >> $@
-endif
 	@echo 'cLibFFI               :: Bool'                               >> $@
 ifeq "$(UseLibFFIForAdjustors)" "YES"
 	@echo 'cLibFFI               = True'                                >> $@
@@ -503,7 +497,7 @@ compiler/hsSyn/HsLit_HC_OPTS     += -fomit-interface-pragmas
 endif
 
 # LibFFI.hs #includes ffi.h
-compiler/stage2/build/LibFFI.hs : $(ffi_HEADER)
+compiler/stage2/build/LibFFI.hs : $(libffi_HEADERS)
 # On Windows it seems we also need to link directly to libffi
 ifeq  "$(HOSTPLATFORM)" "i386-unknown-mingw32"
 define windowsDynLinkToFfi

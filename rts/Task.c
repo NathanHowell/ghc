@@ -173,7 +173,7 @@ static Task*
 newTask (rtsBool worker)
 {
 #if defined(THREADED_RTS)
-    Ticks currentElapsedTime, currentUserTime;
+    Time currentElapsedTime, currentUserTime;
 #endif
     Task *task;
 
@@ -333,11 +333,39 @@ discardTasksExcept (Task *keep)
     RELEASE_LOCK(&all_tasks_mutex);
 }
 
+//
+// After the capabilities[] array has moved, we have to adjust all
+// (Capability *) pointers to point to the new array.  The old array
+// is still valid at this point.
+//
+void updateCapabilityRefs (void)
+{
+    Task *task;
+    InCall *incall;
+
+    ACQUIRE_LOCK(&all_tasks_mutex);
+
+    for (task = all_tasks; task != NULL; task=task->all_link) {
+        if (task->cap != NULL) {
+            task->cap = &capabilities[task->cap->no];
+        }
+
+        for (incall = task->incall; incall != NULL; incall = incall->prev_stack) {
+            if (incall->suspended_cap != NULL) {
+                incall->suspended_cap = &capabilities[incall->suspended_cap->no];
+            }
+        }
+    }
+
+    RELEASE_LOCK(&all_tasks_mutex);
+}
+
+
 void
 taskTimeStamp (Task *task USED_IF_THREADS)
 {
 #if defined(THREADED_RTS)
-    Ticks currentElapsedTime, currentUserTime;
+    Time currentElapsedTime, currentUserTime;
 
     currentUserTime = getThreadCPUTime();
     currentElapsedTime = getProcessElapsedTime();
@@ -355,7 +383,7 @@ taskTimeStamp (Task *task USED_IF_THREADS)
 }
 
 void
-taskDoneGC (Task *task, Ticks cpu_time, Ticks elapsed_time)
+taskDoneGC (Task *task, Time cpu_time, Time elapsed_time)
 {
     task->gc_time  += cpu_time;
     task->gc_etime += elapsed_time;

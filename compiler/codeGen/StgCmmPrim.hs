@@ -42,6 +42,7 @@ import Constants
 import Module
 import FastString
 import Outputable
+import StaticFlags
 
 ------------------------------------------------------------------------
 --	Primitive operations and foreign calls
@@ -229,6 +230,15 @@ emitPrimOp [res] SparkOp [arg]
             [(CmmReg (CmmGlobal BaseReg), AddrHint), ((CmmReg (CmmLocal tmp)), AddrHint)]
         emit (mkAssign (CmmLocal res) (CmmReg (CmmLocal tmp)))
 
+emitPrimOp [res] GetCCSOfOp [arg]
+  = emit (mkAssign (CmmLocal res) val)
+  where
+    val | opt_SccProfilingOn = costCentreFrom (cmmUntag arg)
+        | otherwise          = CmmLit zeroCLit
+
+emitPrimOp [res] GetCurrentCCSOp [_dummy_arg]
+   = emit (mkAssign (CmmLocal res) curCCS)
+
 emitPrimOp [res] ReadMutVarOp [mutv]
    = emit (mkAssign (CmmLocal res) (cmmLoadIndexW mutv fixedHdrSize gcWord))
 
@@ -297,8 +307,12 @@ emitPrimOp [res] DataToTagOp [arg]
 --	}
 emitPrimOp [res] UnsafeFreezeArrayOp [arg]
    = emit $ catAGraphs
-	 [ setInfo arg (CmmLit (CmmLabel mkMAP_FROZEN_infoLabel)),
-	   mkAssign (CmmLocal res) arg ]
+   [ setInfo arg (CmmLit (CmmLabel mkMAP_FROZEN_infoLabel)),
+     mkAssign (CmmLocal res) arg ]
+emitPrimOp [res] UnsafeFreezeArrayArrayOp [arg]
+   = emit $ catAGraphs
+   [ setInfo arg (CmmLit (CmmLabel mkMAP_FROZEN_infoLabel)),
+     mkAssign (CmmLocal res) arg ]
 
 --  #define unsafeFreezzeByteArrayzh(r,a)	r=(a)
 emitPrimOp [res] UnsafeFreezeByteArrayOp [arg]
@@ -616,6 +630,7 @@ translateOp SameMutVarOp           = Just mo_wordEq
 translateOp SameMVarOp             = Just mo_wordEq
 translateOp SameMutableArrayOp     = Just mo_wordEq
 translateOp SameMutableByteArrayOp = Just mo_wordEq
+translateOp SameMutableArrayArrayOp= Just mo_wordEq
 translateOp SameTVarOp             = Just mo_wordEq
 translateOp EqStablePtrOp          = Just mo_wordEq
 

@@ -32,7 +32,7 @@ import MonadUtils      ( MonadIO(..) )
 
 import System.Directory(getCurrentDirectory)
 import Control.Monad   (forM, forM_)
-import Data.List       (nub, find, maximumBy)
+import Data.List       (nub, maximumBy)
 import Data.Maybe      (fromMaybe, mapMaybe)
 import Data.Map as Map (Map, fromList, assocs, lookup, elems)
 import Data.Set as Set (Set, fromList, member)
@@ -138,19 +138,20 @@ cmmMetaLlvmGens dflags mod_loc tiMap cmm = do
       emitFileMeta fileId unitId unitFile
       return fileId
 
+  -- Lookup of procedure Cmm data
+  let procMap = Map.fromList [ (l, p) | p@(CmmProc _ l _) <- cmm ]
+  
   -- Emit metadata for files and procedures
   forM_ (assocs tiMap) $ \(lbl, tim) -> do
 
     -- Decide what source code to associate with procedure
-    let procTick = findGoodSourceTick lbl tiMap idLabelMap
+    let procTick = findGoodSourceTick lbl unitFile tiMap idLabelMap
         (line, col) = case fmap sourceSpan procTick of
           Just span -> (srcSpanStartLine span, srcSpanStartCol span)
           _         -> (1, 0)
 
-    -- Find procedure in CMM data
-    let myProc (CmmProc _ l _)  = l == lbl
-        myProc _                = False
-    case find myProc cmm of
+    -- Find procedure in Cmm data
+    case Map.lookup lbl procMap of
       Just (CmmProc infos _ (ListGraph blocks)) | not (null blocks) -> do
 
         -- Generate metadata for procedure
@@ -229,20 +230,23 @@ emitProcMeta procId unitId srtypeId entryLabel procTick defaultFileId (line, _) 
 -- ("parent").
 --
 -- As this might often give us a whole list of ticks to choose from,
--- we arbitrarily select the biggest source span and hope that it
+-- we arbitrarily select the biggest source span - preferably from the
+-- source file we are currently compiling - and hope that it
 -- corresponds to the most useful location in the code. All nothing
 -- but guesswork, obviously, but this is meant to be more or lesser
 -- filler data anyway.
-findGoodSourceTick :: CLabel -> TickMap -> Map Int CLabel -> Maybe (Tickish ())
-findGoodSourceTick lbl tiMap idLabelMap
+findGoodSourceTick :: CLabel -> FilePath -> TickMap -> Map Int CLabel -> Maybe (Tickish ())
+findGoodSourceTick lbl unit tiMap idLabelMap
   | null ticks = Nothing
-  | otherwise  = Just $ maximumBy (compare `on` rangeLength) ticks
+  | otherwise  = Just $ maximumBy (compare `on` rangeRating) ticks
   where
+    unitFS = mkFastString unit
     ticks = findSourceTis lbl
-    rangeLength (SourceNote span _) =
-      (srcSpanEndLine span - srcSpanStartLine span,
+    rangeRating (SourceNote span _) =
+      (srcSpanFile span == unitFS,
+       srcSpanEndLine span - srcSpanStartLine span,
        srcSpanEndCol span - srcSpanStartCol span)
-    rangeLength _non_source_note = error "rangeLength"
+    rangeRating _non_source_note = error "rangeRating"
     findSourceTis :: CLabel -> [Tickish ()]
     findSourceTis l = case Map.lookup l tiMap of
       Just tim

@@ -251,7 +251,10 @@ mkTick t (Lam x e)
      -- just a counting tick: leave it on the outside
   | otherwise        = Tick t (Lam x e)
 
-mkTick t other = Tick t other
+  -- finally make sure we don't add duplicated ticks
+mkTick t e
+  | hasTick t e = e
+  | otherwise   = Tick t e
 
 isSaturatedConApp :: CoreExpr -> Bool
 isSaturatedConApp e = go e []
@@ -273,6 +276,11 @@ tickHNFArgs t e = push t e
   push t (App f (Type u)) = App (push t f) (Type u)
   push t (App f arg) = App (push t f) (mkTick t arg)
   push _t e = e
+
+hasTick :: Tickish Id -> CoreExpr -> Bool
+hasTick t (Tick t' e) = t == t' || hasTick t e
+hasTick _ _other      = False
+
 \end{code}
 
 %************************************************************************
@@ -1281,6 +1289,13 @@ altSize (c,bs,e) = c `seq` varsSize bs + exprSize e
 
 \begin{code}
 data CoreStats = CS { cs_tm, cs_ty, cs_co :: Int }
+
+
+instance Outputable CoreStats where 
+ ppr (CS { cs_tm = i1, cs_ty = i2, cs_co = i3 }) = 
+    text "size of" <+> vcat [ text "terms     =" <+> int i1
+                            , text "types     =" <+> int i2
+                            , text "coercions =" <+> int i3 ]
 
 plusCS :: CoreStats -> CoreStats -> CoreStats
 plusCS (CS { cs_tm = p1, cs_ty = q1, cs_co = r1 })

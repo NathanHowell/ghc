@@ -381,6 +381,7 @@ RTS_FUN_DECL(stg_newByteArrayzh);
 RTS_FUN_DECL(stg_newPinnedByteArrayzh);
 RTS_FUN_DECL(stg_newAlignedPinnedByteArrayzh);
 RTS_FUN_DECL(stg_newArrayzh);
+RTS_FUN_DECL(stg_newArrayArrayzh);
 
 RTS_FUN_DECL(stg_newMutVarzh);
 RTS_FUN_DECL(stg_atomicModifyMutVarzh);
@@ -488,7 +489,6 @@ extern StgWord RTS_VAR(stable_ptr_table);
 
 // Profiling.c
 extern unsigned int RTS_VAR(era);
-extern StgWord      RTS_VAR(CCCS);	        /* current CCS */
 extern unsigned int RTS_VAR(entering_PAP);
 extern StgWord      RTS_VAR(CC_LIST);               /* registered CC list */
 extern StgWord      RTS_VAR(CCS_LIST);         /* registered CCS list */
