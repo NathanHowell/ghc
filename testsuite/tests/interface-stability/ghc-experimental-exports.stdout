@@ -7193,6 +7193,7 @@ module GHC.PrimOps where
   readIntArray# :: forall d. MutableByteArray# d -> Int# -> State# d -> (# State# d, Int# #)
   readIntOffAddr# :: forall d. Addr# -> Int# -> State# d -> (# State# d, Int# #)
   readMVar# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). MVar# d a -> State# d -> (# State# d, a #)
+  readMany# :: forall a. SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   readMutVar# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). MutVar# d a -> State# d -> (# State# d, a #)
   readMutableArrayArrayArray# :: forall s. MutableArrayArray# s -> Int# -> State# s -> (# State# s, MutableArrayArray# s #)
   readMutableByteArrayArray# :: forall s. MutableArrayArray# s -> Int# -> State# s -> (# State# s, MutableByteArray# s #)
@@ -7291,7 +7292,7 @@ module GHC.PrimOps where
   realWorld# :: State# RealWorld
   reallyUnsafePtrEquality :: forall a. a -> a -> Int#
   reallyUnsafePtrEquality# :: forall {l :: Levity} {k :: Levity} (a :: TYPE (BoxedRep l)) (b :: TYPE (BoxedRep k)). a -> b -> Int#
-  registerWait# :: forall d a. TVar# d a -> a -> State# d -> State# d
+  registerLogRange# :: forall a. SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> Int# -> Int# -> State# RealWorld -> State# RealWorld
   remAddr# :: Addr# -> Int# -> Int#
   remInt# :: Int# -> Int# -> Int#
   remInt16# :: Int16# -> Int16# -> Int16#
@@ -7406,7 +7407,7 @@ module GHC.PrimOps where
   sqrtFloatX4# :: FloatX4# -> FloatX4#
   sqrtFloatX8# :: FloatX8# -> FloatX8#
   stableNameToInt# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). StableName# a -> Int#
-  stmCommitLog# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> MutableByteArray# RealWorld -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
+  stmCommitLog# :: forall a. SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   subInt16# :: Int16# -> Int16# -> Int16#
   subInt32# :: Int32# -> Int32# -> Int32#
   subInt64# :: Int64# -> Int64# -> Int64#
@@ -7549,6 +7550,7 @@ module GHC.PrimOps where
   unsafeThawArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)) d. Array# a -> State# d -> (# State# d, MutableArray# d a #)
   unsafeThawByteArray# :: forall d. ByteArray# -> State# d -> (# State# d, MutableByteArray# d #)
   unsafeThawSmallArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)) d. SmallArray# a -> State# d -> (# State# d, SmallMutableArray# d a #)
+  validate# :: forall a. SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   void# :: (# #)
   waitRead# :: forall d. Int# -> State# d -> State# d
   waitWrite# :: forall d. Int# -> State# d -> State# d

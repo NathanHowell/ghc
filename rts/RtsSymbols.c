@@ -559,7 +559,8 @@ extern char **environ;
       SymI_HasDataProto(stg_maskUninterruptiblezh)                          \
       SymI_HasDataProto(stg_catchzh)                                        \
       SymI_HasDataProto(stg_stmCommitLogzh)                                 \
-      SymI_HasDataProto(stg_registerWaitzh)                                 \
+      SymI_HasDataProto(stg_validatezh)                                     \
+      SymI_HasDataProto(stg_readManyzh)                                     \
       SymI_HasDataProto(stg_registerLogRangezh)                             \
       SymI_HasDataProto(stg_blockOnRegisteredzh)                            \
       SymI_HasDataProto(stg_clearRegistrationszh)                           \

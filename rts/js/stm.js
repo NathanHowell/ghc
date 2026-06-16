@@ -94,6 +94,29 @@ function h$stmCommitLog(tvars, expected, newvals, len) {
   return 0;
 }
 
+// Lock-free read-set validation: 0 if every tvar still holds its expected
+// value, 1 if any changed. The single-threaded JS RTS takes no locks.
+function h$validate(tvars, expected, len) {
+  for (var i = 0; i < len; i++) {
+    if (tvars[i].val !== expected[i]) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+// Batch-read a fragment's read set: fill results and expected with each
+// tvar's current value. The single-threaded JS RTS never observes a
+// concurrent commit, so this cannot fail.
+function h$readMany(tvars, results, expected, len) {
+  for (var i = 0; i < len; i++) {
+    var v = tvars[i].val;
+    results[i]  = v;
+    expected[i] = v;
+  }
+  return 0;
+}
+
 function h$registerLogRange(tvars, expected, start, end) {
   for (var i = start; i < end; i++) {
     h$registerWait(tvars[i], expected[i]);
@@ -126,49 +149,6 @@ function h$blockOnRegistered() {
 
 function h$clearRegistrations() {
   h$stmClearRegistrationsThread(h$currentThread);
-}
-
-function h$stmWait(tvars, expected, queues, len) {
-  // unwind stack to h$atomically_e frame
-  while (h$sp > 0) {
-    var f = h$stack[h$sp];
-    if (f === h$atomically_e) {
-      break;
-    }
-    var size;
-    if (f === h$ap_gen) {
-      size = ((h$stack[h$sp-1] >> 8) + 2);
-    } else {
-      var tag = f.gtag;
-      if (tag < 0) { // dynamic size
-        size = h$stack[h$sp-1];
-      } else {
-        size = (tag & 0xff) + 1;
-      }
-    }
-    h$sp -= size;
-  }
-
-  if (h$sp <= 0 || h$stack[h$sp] !== h$atomically_e) {
-    throw "h$stmWait: wait outside a transaction";
-  }
-
-  for (var i = 0; i < len; i++) {
-    if (tvars[i].val !== expected[i]) {
-      return h$stmStartTransaction(h$stack[h$sp - 1]);
-    }
-  }
-
-  h$stmClearRegistrationsThread(h$currentThread);
-  var waiting = h$stmWaiting(h$currentThread);
-
-  for (var j = 0; j < len; j++) {
-    h$registerWait(tvars[j], expected[j]);
-  }
-
-  h$currentThread.interruptible = true;
-  h$p2(waiting, h$stmResumeRetry_e);
-  return h$blockThread(h$currentThread, waiting);
 }
 
 function h$newTVar(v) {

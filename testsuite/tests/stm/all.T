@@ -47,3 +47,33 @@ test('stm_unsafeIO_rerun',
      , wasm_skip
      ],
      compile_and_run, [''])
+
+test('stm_mfix',
+     [ req_ghc_smp
+     , req_target_smp
+     , only_ways(threaded_ways)
+     , extra_run_opts('+RTS -N4 -RTS')
+     , js_skip
+     , wasm_skip
+     ],
+     compile_and_run, [''])
+
+test('stm_nested_orElse',
+     [ req_ghc_smp
+     , req_target_smp
+     , only_ways(threaded_ways)
+     , extra_run_opts('+RTS -N4 -RTS')
+     , js_skip
+     , wasm_skip
+     ],
+     compile_and_run, [''])
+
+test('stm_validate_readMany',
+     [ req_ghc_smp
+     , req_target_smp
+     , only_ways(threaded_ways)
+     , extra_run_opts('+RTS -N4 -RTS')
+     , js_skip
+     , wasm_skip
+     ],
+     compile_and_run, [''])

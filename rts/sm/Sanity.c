@@ -392,6 +392,25 @@ checkClosure( const StgClosure* p )
         return thunk_sizeW_fromITBL(info);
       }
 
+    case MUT_PRIM:
+        // M-2: STM watch-queue entries are MUT_PRIM. They must never carry a
+        // NULL pointer field: the per-thread registration list is terminated by
+        // stg_END_STM_WATCH_QUEUE_closure, and a NULL slot in a live entry would
+        // be dereferenced as a closure by the generic MUT_PRIM scavenger/marker.
+        // The generic ptr-slot loop below would already assert on a NULL
+        // (LOOKS_LIKE_CLOSURE_PTR(NULL) is false); checking the named fields here
+        // makes the intent explicit and keeps STM coverage in the sanity pass.
+        if (p->header.info == &stg_TVAR_WATCH_QUEUE_info) {
+            StgTVarWatchQueue *wq = (StgTVarWatchQueue *)p;
+            ASSERT(LOOKS_LIKE_CLOSURE_PTR(wq->closure));
+            ASSERT(LOOKS_LIKE_CLOSURE_PTR(wq->next_queue_entry));
+            ASSERT(LOOKS_LIKE_CLOSURE_PTR(wq->prev_queue_entry));
+            ASSERT(LOOKS_LIKE_CLOSURE_PTR(wq->next_tso_queue_entry));
+            ASSERT(LOOKS_LIKE_CLOSURE_PTR(wq->tvar));
+            ASSERT(LOOKS_LIKE_CLOSURE_PTR(wq->expected));
+            return sizeofW(StgTVarWatchQueue);
+        }
+        FALLTHROUGH;
     case FUN:
     case FUN_1_0:
     case FUN_0_1:
@@ -407,7 +426,6 @@ checkClosure( const StgClosure* p )
     case CONSTR_2_0:
     case BLACKHOLE:
     case PRIM:
-    case MUT_PRIM:
     case MUT_VAR_CLEAN:
     case MUT_VAR_DIRTY:
     case TVAR:

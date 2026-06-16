@@ -709,14 +709,8 @@ hdTryPutMVarStr = fsLit "h$tryPutMVar"
 hdNewTVar :: FastString
 hdNewTVar = fsLit "h$newTVar"
 
-hdReadTVar :: FastString
-hdReadTVar = fsLit "h$readTVar"
-
 hdReadTVarIO :: FastString
 hdReadTVarIO = fsLit "h$readTVarIO"
-
-hdWriteTVar :: FastString
-hdWriteTVar = fsLit "h$writeTVar"
 
 hdReadMVarStr :: FastString
 hdReadMVarStr = fsLit "h$readMVar"
@@ -730,8 +724,14 @@ hdStmStartTransactionStr = fsLit "h$stmStartTransaction"
 hdStmCommitLogStr :: FastString
 hdStmCommitLogStr = fsLit "h$stmCommitLog"
 
-hdRegisterWaitStr :: FastString
-hdRegisterWaitStr = fsLit "h$registerWait"
+hdValidateStr :: FastString
+hdValidateStr = fsLit "h$validate"
+
+hdReadManyStr :: FastString
+hdReadManyStr = fsLit "h$readMany"
+
+hdRegisterLogRangeStr :: FastString
+hdRegisterLogRangeStr = fsLit "h$registerLogRange"
 
 hdBlockOnRegisteredStr :: FastString
 hdBlockOnRegisteredStr = fsLit "h$blockOnRegistered"
@@ -747,12 +747,6 @@ hdAtomicallyEntryStr = name $ fsLit "h$atomically_e"
 
 hdAtomicallyStr :: FastString
 hdAtomicallyStr = "h$atomically"
-
-hdStgResumeRetryEntry :: JStgExpr
-hdStgResumeRetryEntry = global (identFS hdStgResumeRetryEntryStr)
-
-hdStgResumeRetryEntryStr :: Ident
-hdStgResumeRetryEntryStr = name $ fsLit "h$stmResumeRetry_e"
 
 hdRetryInterrupted :: JStgExpr
 hdRetryInterrupted = global (identFS hdRetryInterruptedStr)

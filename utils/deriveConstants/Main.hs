@@ -525,7 +525,7 @@ wanteds os = concat
           ,closureField C "StgAtomicallyFrame" "result"
 
           ,closureField C "StgTRecHeader" "next_trec"
-          ,closureField C "StgTRecHeader" "plan"
+          ,closureField C "StgTRecHeader" "wait_queue"
 
           ,closureSize  C "StgTVar"
           ,closureField C "StgTVar" "current_value"

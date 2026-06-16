@@ -1215,16 +1215,29 @@ stg_stmCommitLogzh (P_ tvars, P_ expected, P_ newvals, W_ len)
     return (r);
 }
 
-stg_registerWaitzh (P_ tvar, P_ expected)
+stg_validatezh (P_ tvars, P_ expected, W_ len)
 {
-    // stmRegisterWait may allocate
-    MAYBE_GC_PP (stg_registerWaitzh, tvar, expected);
+    W_ r;
 
-    ccall stmRegisterWait(MyCapability() "ptr",
-                          CurrentTSO "ptr",
-                          tvar "ptr",
-                          expected "ptr");
-    return ();
+    (r) = ccall stmValidateLog(MyCapability() "ptr",
+                               CurrentTSO "ptr",
+                               tvars "ptr",
+                               expected "ptr",
+                               len);
+    return (r);
+}
+
+stg_readManyzh (P_ tvars, P_ results, P_ expected, W_ len)
+{
+    W_ r;
+
+    (r) = ccall stmReadMany(MyCapability() "ptr",
+                            CurrentTSO "ptr",
+                            tvars "ptr",
+                            results "ptr",
+                            expected "ptr",
+                            len);
+    return (r);
 }
 
 stg_registerLogRangezh (P_ tvars, P_ expected, W_ start, W_ end)

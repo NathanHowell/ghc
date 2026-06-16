@@ -3158,13 +3158,37 @@ primop  StmCommitLogOp "stmCommitLog#" GenPrimOp
    out_of_line = True
    effect = ReadWriteEffect
 
-primop RegisterWaitOp "registerWait#" GenPrimOp
-   TVar# s a
-   -> a
-   -> State# s -> State# s
-   { Register the current thread on this TVar's wait queue.
-     The parameter is the expected value - thread wakes if TVar differs. }
+primop ValidateOp "validate#" GenPrimOp
+   SmallMutableArray# RealWorld a
+   -> SmallMutableArray# RealWorld a
+   -> Int#
+   -> State# RealWorld -> (# State# RealWorld, Int# #)
+   { Lock-free incremental validation of a read set. Given parallel arrays of
+     @tvars@ and the @expected@ values observed for them, plus a length, check
+     that every TVar's current value is still pointer-equal to its expected
+     value. Returns 0# if the read set is still consistent, 1# if any TVar has
+     changed (the transaction is a zombie and must restart). Takes no locks and
+     performs no writes. }
    with
+   strictness  = { \ _arity -> mkClosedDmdSig [topDmd, topDmd, topDmd, topDmd] topDiv }
+   out_of_line = True
+   effect = ReadWriteEffect
+
+primop ReadManyOp "readMany#" GenPrimOp
+   SmallMutableArray# RealWorld a
+   -> SmallMutableArray# RealWorld a
+   -> SmallMutableArray# RealWorld a
+   -> Int#
+   -> State# RealWorld -> (# State# RealWorld, Int# #)
+   { Batch-read (and optimistically validate) a statically-known fragment read
+     set in one RTS pass. @tvars@ holds the fragment's PRead TVars; the call
+     fills @results@ with each TVar's current value and @expected@ with the same
+     snapshot (for later commit/validation), over indices [0, len). Returns 0#
+     if the whole batch was read from a mutually-consistent snapshot, 1# if a
+     concurrent commit was observed mid-batch (caller should restart the
+     fragment). Reads only; takes no locks. }
+   with
+   strictness  = { \ _arity -> mkClosedDmdSig [topDmd, topDmd, topDmd, topDmd, topDmd] topDiv }
    out_of_line = True
    effect = ReadWriteEffect
 

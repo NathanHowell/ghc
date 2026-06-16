@@ -639,16 +639,6 @@ rts_gen s = do
                   (return $
                     adjSpN' 2
                     <> returnS (stack .! sp))
-             , closure (ClosureInfo hdStgResumeRetryEntryStr (CIRegs 0 [PtrV]) "resume retry" (CILayoutFixed 0 []) CIStackFrame mempty)
-                           (jVar \blocked ->
-                              return $
-                               mconcat [ jwhenS (stack .! (sp - 2) .!==. hdAtomicallyEntry)
-                                                    (appS throwStr [jString "h$stmResumeRetry_e: unexpected value on stack"])
-                                       , blocked |= stack .! (sp - 1)
-                                       , adjSpN' 2
-                                       , appS hdStmRemoveBlockedThreadStr [blocked, hdCurrentThread]
-                                       , returnS (app hdStmStartTransactionStr [stack .! (sp - 1)])
-                                       ])
              , closure (ClosureInfo hdLazyEntryStr (CIRegs 0 [PtrV]) "generic lazy value" (CILayoutFixed 0 []) CIThunk mempty)
                            (jVar \x ->
                               return $

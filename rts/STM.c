@@ -100,7 +100,13 @@
 
 #define TRACE(_x...) debugTrace(DEBUG_stm, "STM: " _x)
 
-// Log-based execution uses trec->plan to carry per-thread registrations.
+// Log-based execution uses trec->wait_queue to carry per-thread registrations.
+// It is the head of a singly-linked StgTVarWatchQueue list threaded through the
+// next_tso_queue_entry field and terminated by stg_END_STM_WATCH_QUEUE_closure
+// (never NULL): the watch-queue closures are MUT_PRIM, and the generic GC
+// scavenger/marker walks every pointer slot unconditionally, so a NULL slot in a
+// live entry would be dereferenced as a closure. Every traversal below therefore
+// compares against END_STM_WATCH_QUEUE rather than NULL.
 
 // Stack buffer size for per-log num_updates snapshots.
 #define STM_NUM_UPDATES_STACK_LIMIT 64
@@ -315,7 +321,7 @@ static StgTRecHeader *new_stg_trec_header(Capability *cap) {
   SET_HDR (result, &stg_TREC_HEADER_info, CCS_SYSTEM);
   result -> next_trec = NO_TREC;
   result -> state = TREC_ACTIVE;
-  result -> plan = NULL;
+  result -> wait_queue = (StgClosure *)END_STM_WATCH_QUEUE;
 
   return result;
 }
@@ -355,16 +361,20 @@ static StgTVarWatchQueue *alloc_stg_tvar_watch_queue(Capability *cap,
 static void free_stg_tvar_watch_queue(Capability *cap,
                                       StgTVarWatchQueue *wq) {
 #if defined(REUSE_MEMORY)
+  // H-1: do NOT zero the traced pointer fields (tvar/expected/closure/
+  // next_tso_queue_entry). Under the nonmoving collector a concurrent mark may
+  // already have this entry (still reachable via trec->wait_queue) in its SATB
+  // snapshot; nulling expected without pushing the old value would let the
+  // snapshot it still needs be reclaimed, while the blocked transaction's
+  // revalidation path (validate_and_lock_registered) still reads q->expected --
+  // a use-after-free. The whole freelist is dropped wholesale by stmPreGCHook,
+  // so zeroing buys no GC-safety anyway. We only repurpose next_queue_entry as
+  // the freelist link, barriering its old value.
   IF_NONMOVING_WRITE_BARRIER_ENABLED {
     updateRemembSetPushClosure(cap, (StgClosure *)wq->next_queue_entry);
     updateRemembSetPushClosure(cap, (StgClosure *)cap->free_tvar_watch_queues);
   }
   wq -> next_queue_entry = cap -> free_tvar_watch_queues;
-  wq -> prev_queue_entry = END_STM_WATCH_QUEUE;
-  wq -> next_tso_queue_entry = NULL;
-  wq -> tvar = NULL;
-  wq -> expected = NULL;
-  wq -> closure = NULL;
   cap -> free_tvar_watch_queues = wq;
 #endif
 }
@@ -383,13 +393,13 @@ static StgTRecHeader *alloc_stg_trec_header(Capability *cap) {
     result -> next_trec = NO_TREC;
     result -> state = TREC_ACTIVE;
   }
-  result -> plan = NULL;
+  result -> wait_queue = (StgClosure *)END_STM_WATCH_QUEUE;
   return result;
 }
 
 static void free_stg_trec_header(Capability *cap,
                                  StgTRecHeader *trec) {
-  trec -> plan = NULL;
+  trec -> wait_queue = (StgClosure *)END_STM_WATCH_QUEUE;
 #if defined(REUSE_MEMORY)
   IF_NONMOVING_WRITE_BARRIER_ENABLED {
     updateRemembSetPushClosure(cap, (StgClosure *)trec->next_trec);
@@ -409,9 +419,36 @@ static void free_stg_trec_header(Capability *cap,
 /*......................................................................*/
 
 static inline StgTVarWatchQueue *trec_wait_list(StgTRecHeader *trec) {
-  return (StgTVarWatchQueue *)trec->plan;
+  return (StgTVarWatchQueue *)trec->wait_queue;
 }
 
+// M-1: in-place permutation of a traced SmallMutArrPtrs is invisible to the
+// nonmoving collector's SATB snapshot unless every overwritten slot's old value
+// is pushed to the update remembered set first. recordClosureMutated (run by the
+// callers after sorting) only schedules a generational rescan; it does not retain
+// the pre-snapshot pointers. So before permuting, push every slot of all three
+// arrays. This is conservative (it pushes survivors too) but correct and only
+// runs when the nonmoving collector is active.
+static void barrier_log_arrays(Capability *cap,
+                               StgSmallMutArrPtrs *tvars,
+                               StgSmallMutArrPtrs *expected,
+                               StgSmallMutArrPtrs *newvals,
+                               StgWord len) {
+  IF_NONMOVING_WRITE_BARRIER_ENABLED {
+    for (StgWord i = 0; i < len; i++) {
+      updateRemembSetPushClosure(cap, tvars->payload[i]);
+      updateRemembSetPushClosure(cap, expected->payload[i]);
+      if (newvals != NULL) {
+        updateRemembSetPushClosure(cap, newvals->payload[i]);
+      }
+    }
+  }
+}
+
+// L-2: insertion sort is O(n^2) worst case, stacked on the O(n^2) log build,
+// inside the commit critical section. It is kept because it is fast for the tiny
+// logs typical of STM and needs no auxiliary tvar_id. If large transactions ever
+// dominate, sort an index permutation with an O(n log n) sort instead.
 static void sort_log_arrays(StgSmallMutArrPtrs *tvars,
                             StgSmallMutArrPtrs *expected,
                             StgSmallMutArrPtrs *newvals,
@@ -540,6 +577,13 @@ static void commit_log_entries(Capability *cap,
                                StgSmallMutArrPtrs *newvals,
                                StgWord len,
                                StgBool acquire_all) {
+  // L-1: invariant -- every committer that changes current_value MUST also bump
+  // num_updates (the is_update branch below does both, atomically w.r.t. the
+  // lock held on s). The read-phase validation (check_read_only_log /
+  // stmValidateLog) relies on this: a no-op write (new_val == expected_val) is
+  // suppressed here precisely so that an unchanged TVar's num_updates is never
+  // perturbed, keeping the double-load + num_updates recheck sound. Do not bump
+  // num_updates without writing current_value, or vice versa.
   for (StgWord i = 0; i < len; i++) {
     StgTVar *s = (StgTVar *)tvars->payload[i];
     StgClosure *expected_val = expected->payload[i];
@@ -552,6 +596,9 @@ static void commit_log_entries(Capability *cap,
 #endif
       unlock_tvar(cap, trec, s, new_val, true);
     } else if (acquire_all) {
+      // No-op entry (new == expected). Unlock if we hold the lock because
+      // acquire_all locked every slot above. In the read-phase mode (acquire_all
+      // == false) a non-update slot is left untouched.
       unlock_tvar(cap, trec, s, expected_val, true);
     }
   }
@@ -569,7 +616,7 @@ static void unlock_registered_prefix(Capability *cap,
 static void unlock_registered_all(Capability *cap,
                                   StgTRecHeader *trec,
                                   StgTVarWatchQueue *head) {
-  unlock_registered_prefix(cap, trec, head, NULL);
+  unlock_registered_prefix(cap, trec, head, END_STM_WATCH_QUEUE);
 }
 
 static StgBool validate_and_lock_registered(Capability *cap,
@@ -580,7 +627,7 @@ static StgBool validate_and_lock_registered(Capability *cap,
     return false;
   }
 
-  for (StgTVarWatchQueue *q = head; q != NULL; q = q->next_tso_queue_entry) {
+  for (StgTVarWatchQueue *q = head; q != END_STM_WATCH_QUEUE; q = q->next_tso_queue_entry) {
     if (!cond_lock_tvar(cap, trec, q->tvar, q->expected)) {
       unlock_registered_prefix(cap, trec, head, q);
       return false;
@@ -593,7 +640,7 @@ static StgBool validate_and_lock_registered(Capability *cap,
 static void remove_wait_queue_entries_from_list(Capability *cap,
                                                 StgTRecHeader *trec) {
   StgTVarWatchQueue *q = trec_wait_list(trec);
-  while (q != NULL) {
+  while (q != END_STM_WATCH_QUEUE) {
     StgTVarWatchQueue *next = q->next_tso_queue_entry;
     StgTVar *s = q->tvar;
     StgClosure *saw = lock_tvar(cap, trec, s);
@@ -613,7 +660,7 @@ static void remove_wait_queue_entries_from_list(Capability *cap,
     unlock_tvar(cap, trec, s, saw, false);
     q = next;
   }
-  trec->plan = NULL;
+  trec->wait_queue = (StgClosure *)END_STM_WATCH_QUEUE;
 }
 
 
@@ -698,7 +745,7 @@ void stmAbortTransaction(Capability *cap,
          (trec -> state == TREC_CONDEMNED));
 
   TRACE("%p : aborting transaction", trec);
-  if (trec->plan != NULL) {
+  if (trec_wait_list(trec) != END_STM_WATCH_QUEUE) {
     TRACE("%p : stmAbortTransaction clearing registrations", trec);
     remove_wait_queue_entries_from_list(cap, trec);
   }
@@ -731,7 +778,7 @@ void stmCondemnTransaction(Capability *cap,
          (trec -> state == TREC_WAITING) ||
          (trec -> state == TREC_CONDEMNED));
 
-  if (trec->plan != NULL) {
+  if (trec_wait_list(trec) != END_STM_WATCH_QUEUE) {
     TRACE("%p : stmCondemnTransaction clearing registrations", trec);
     remove_wait_queue_entries_from_list(cap, trec);
   }
@@ -755,7 +802,7 @@ StgInt stmCommitLog(Capability *cap,
   ASSERT((trec -> state == TREC_ACTIVE) ||
          (trec -> state == TREC_CONDEMNED));
   if (trec->state == TREC_CONDEMNED) {
-    if (trec->plan != NULL) {
+    if (trec_wait_list(trec) != END_STM_WATCH_QUEUE) {
       remove_wait_queue_entries_from_list(cap, trec);
     }
     TRACE("%p : stmCommitLog()=%d", trec, 0);
@@ -763,6 +810,9 @@ StgInt stmCommitLog(Capability *cap,
   }
 
   StgWord count = (StgWord)len;
+  // M-1: barrier the old slot values before the in-place permutation, then
+  // recordClosureMutated for the generational rescan after.
+  barrier_log_arrays(cap, tvars, expected, newvals, count);
   sort_log_arrays(tvars, expected, newvals, count);
   recordClosureMutated(cap, (StgClosure *)tvars);
   recordClosureMutated(cap, (StgClosure *)expected);
@@ -839,15 +889,134 @@ StgInt stmCommitLog(Capability *cap,
   return 1;
 }
 
+/*......................................................................*/
+
+// validate# : lock-free, address-independent revalidation of a logged read set.
+//
+// Given parallel arrays of tvars and the expected values observed for them, plus
+// a length, check that every TVar's current value is still pointer-equal to its
+// expected value. Returns 0 if the read set is still consistent, 1 if any TVar
+// has changed (the transaction is a zombie and must restart). Takes no locks and
+// performs no writes; it is the read branch of validate_and_lock_log with the
+// STM_FG_LOCKS double-load + num_updates recheck, but it never CASes.
+StgInt stmValidateLog(Capability *cap STG_UNUSED,
+                      StgTSO *tso,
+                      StgSmallMutArrPtrs *tvars,
+                      StgSmallMutArrPtrs *expected,
+                      StgInt len) {
+  StgTRecHeader *trec = tso->trec;
+  TRACE("%p : stmValidateLog(%" FMT_Word ")", trec, (StgWord)len);
+  ASSERT(trec != NO_TREC);
+
+  if (shake()) {
+    TRACE("%p : shake, pretending log is invalid when it may not be", trec);
+    return 1;
+  }
+
+  for (StgInt i = 0; i < len; i++) {
+    StgTVar *s = (StgTVar *)tvars->payload[i];
+    StgClosure *expected_val = expected->payload[i];
+#if defined(STM_FG_LOCKS)
+    // Double-load + num_updates recheck so we never conclude "consistent" off a
+    // value seen mid-commit (a TREC_HEADER lock stamp or a value about to be
+    // re-checked by num_updates). If a concurrent committer holds the lock, the
+    // stamp differs from expected_val and we report a conflict.
+    StgClosure *current_value = ACQUIRE_LOAD(&s->current_value);
+    StgInt seen_updates = SEQ_CST_LOAD(&s->num_updates);
+    StgClosure *current_value2 = ACQUIRE_LOAD(&s->current_value);
+    if (current_value != expected_val ||
+        current_value2 != expected_val ||
+        seen_updates != SEQ_CST_LOAD(&s->num_updates)) {
+      TRACE("%p : stmValidateLog()=1 (i=%" FMT_Word ")", trec, (StgWord)i);
+      return 1;
+    }
+#else
+    StgClosure *current_value = ACQUIRE_LOAD(&s->current_value);
+    if (current_value != expected_val) {
+      TRACE("%p : stmValidateLog()=1 (i=%" FMT_Word ")", trec, (StgWord)i);
+      return 1;
+    }
+#endif
+  }
+
+  TRACE("%p : stmValidateLog()=0", trec);
+  return 0;
+}
+
+/*......................................................................*/
+
+// readMany# : batch-read (and optimistically validate) a statically-known
+// fragment read set in one RTS pass.
+//
+// tvars holds the fragment's PRead TVars; this fills results with each TVar's
+// current value and expected with the same snapshot (for later commit/
+// validation), over indices [0, len). Returns 0 if the whole batch was read from
+// a mutually-consistent snapshot, 1 if a concurrent commit was observed
+// mid-batch (caller should restart the fragment). Reads only; takes no locks.
+StgInt stmReadMany(Capability *cap,
+                   StgTSO *tso,
+                   StgSmallMutArrPtrs *tvars,
+                   StgSmallMutArrPtrs *results,
+                   StgSmallMutArrPtrs *expected,
+                   StgInt len) {
+  StgTRecHeader *trec = tso->trec;
+  TRACE("%p : stmReadMany(%" FMT_Word ")", trec, (StgWord)len);
+  ASSERT(trec != NO_TREC);
+
+  // We overwrite traced pointer slots of results/expected; push their old values
+  // for the nonmoving SATB snapshot before the fill.
+  barrier_log_arrays(cap, results, expected, NULL, (StgWord)len);
+
+  for (StgInt i = 0; i < len; i++) {
+    StgTVar *s = (StgTVar *)tvars->payload[i];
+    StgClosure *r;
+#if defined(STM_FG_LOCKS)
+    // Spin past a TREC_HEADER lock stamp (a concurrent committer) as lock_tvar's
+    // inner loop does, but without CASing, then double-load to detect a commit
+    // that landed between the read and the num_updates snapshot.
+    StgInt seen_updates;
+    for (;;) {
+      const StgInfoTable *info;
+      do {
+        r = ACQUIRE_LOAD(&s->current_value);
+        info = GET_INFO(UNTAG_CLOSURE(r));
+      } while (info == &stg_TREC_HEADER_info);
+      seen_updates = SEQ_CST_LOAD(&s->num_updates);
+      if (ACQUIRE_LOAD(&s->current_value) == r &&
+          SEQ_CST_LOAD(&s->num_updates) == seen_updates) {
+        break;
+      }
+    }
+#else
+    r = ACQUIRE_LOAD(&s->current_value);
+#endif
+    results->payload[i] = r;
+    expected->payload[i] = r;
+  }
+
+  recordClosureMutated(cap, (StgClosure *)results);
+  recordClosureMutated(cap, (StgClosure *)expected);
+
+  TRACE("%p : stmReadMany()=0", trec);
+  return 0;
+}
+
+/*......................................................................*/
+
 static void register_wait(Capability *cap,
                           StgTSO *tso,
                           StgTRecHeader *trec,
                           StgTVar *tvar,
                           StgClosure *expected) {
   for (StgTVarWatchQueue *q = trec_wait_list(trec);
-       q != NULL;
+       q != END_STM_WATCH_QUEUE;
        q = q->next_tso_queue_entry) {
     if (q->tvar == tvar) {
+      // H-2: overwriting a traced MUT_PRIM field that may already be in the
+      // nonmoving snapshot; push the old expected value first.
+      IF_NONMOVING_WRITE_BARRIER_ENABLED {
+        updateRemembSetPushClosure(cap, q->expected);
+      }
       q->expected = expected;
       return;
     }
@@ -870,25 +1039,7 @@ static void register_wait(Capability *cap,
   dirty_TVAR(cap, tvar, (StgClosure *)fq);
   unlock_tvar(cap, trec, tvar, saw, false);
 
-  trec->plan = (StgClosure *)q;
-}
-
-void stmRegisterWait(Capability *cap,
-                     StgTSO *tso,
-                     StgTVar *tvar,
-                     StgClosure *expected) {
-  StgTRecHeader *trec = tso->trec;
-  TRACE("%p : stmRegisterWait(%p)", trec, tvar);
-  ASSERT(trec != NO_TREC);
-  ASSERT(trec->next_trec == NO_TREC);
-  ASSERT((trec->state == TREC_ACTIVE) ||
-         (trec->state == TREC_CONDEMNED));
-
-  if (trec->state == TREC_CONDEMNED) {
-    return;
-  }
-
-  register_wait(cap, tso, trec, tvar, expected);
+  trec->wait_queue = (StgClosure *)q;
 }
 
 void stmRegisterLogRange(Capability *cap,
@@ -948,7 +1099,7 @@ void stmClearRegistrations(Capability *cap, StgTSO *tso) {
     return;
   }
 
-  if (trec->plan != NULL) {
+  if (trec_wait_list(trec) != END_STM_WATCH_QUEUE) {
     remove_wait_queue_entries_from_list(cap, trec);
   }
 

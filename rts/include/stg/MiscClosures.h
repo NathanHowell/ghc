@@ -531,7 +531,8 @@ RTS_FUN_DECL(stg_newConAppObjzh);
 
 RTS_FUN_DECL(stg_atomicallyzh);
 RTS_FUN_DECL(stg_stmCommitLogzh);
-RTS_FUN_DECL(stg_registerWaitzh);
+RTS_FUN_DECL(stg_validatezh);
+RTS_FUN_DECL(stg_readManyzh);
 RTS_FUN_DECL(stg_registerLogRangezh);
 RTS_FUN_DECL(stg_blockOnRegisteredzh);
 RTS_FUN_DECL(stg_clearRegistrationszh);

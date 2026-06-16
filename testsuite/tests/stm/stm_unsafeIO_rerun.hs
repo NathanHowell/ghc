@@ -4,6 +4,7 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Monad
 import Data.IORef
+import GHC.Conc (unsafeIOToSTM)
 import System.Timeout
 
 main :: IO ()

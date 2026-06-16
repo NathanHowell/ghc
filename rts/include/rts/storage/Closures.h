@@ -530,7 +530,9 @@ typedef enum {
 struct StgTRecHeader_ {
   StgHeader                  header;
   struct StgTRecHeader_     *next_trec; /* free-list link; NO_TREC when active */
-  StgClosure               *plan; /* head of per-thread STM wait registrations */
+  StgClosure               *wait_queue; /* head of per-thread STM wait registrations
+                                         * (an StgTVarWatchQueue list terminated by
+                                         * stg_END_STM_WATCH_QUEUE_closure, never NULL) */
   TRecState                  state;
 };
 

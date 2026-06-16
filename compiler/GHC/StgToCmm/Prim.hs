@@ -1787,7 +1787,8 @@ emitPrimOp cfg primop =
   Control0Op -> alwaysExternal
   AtomicallyOp -> alwaysExternal
   StmCommitLogOp -> alwaysExternal
-  RegisterWaitOp -> alwaysExternal
+  ValidateOp -> alwaysExternal
+  ReadManyOp -> alwaysExternal
   RegisterLogRangeOp -> alwaysExternal
   BlockOnRegisteredOp -> alwaysExternal
   ClearRegistrationsOp -> alwaysExternal
