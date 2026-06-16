@@ -49,6 +49,13 @@ import GHC.Internal.Exception
 import GHC.Internal.List (length)
 import GHC.Internal.Num
 import GHC.Internal.Unsafe.Coerce (unsafeCoerce#)
+-- Upstream's "Refine GHC.Internal.Base imports" (6f4f6cf03a) slimmed Base's
+-- re-export of GHC.Internal.Prim, so import the primitive types/classes directly.
+import GHC.Internal.Prim
+import GHC.Internal.Types ( IO(..), Bool(..), Int(..), Any, isTrue# )
+import GHC.Internal.Classes ( Eq(..) )
+import GHC.Internal.Maybe ( Maybe(..) )
+import GHC.Internal.Err ( errorWithoutStackTrace )
 
 -----------------------------------------------------------------------------
 -- Transactional heap operations
@@ -181,10 +188,14 @@ clearRegistrationsIO :: IO ()
 clearRegistrationsIO = stateToIO_ clearRegistrations#
 {-# INLINE clearRegistrationsIO #-}
 
-newSmallArrayIO :: Int -> Any -> IO (SmallMutableArray# RealWorld Any)
+-- A lifted box for the unlifted SmallMutableArray#, so it can be returned from
+-- IO (whose result kind must be lifted). Cf. "STM: avoid IO with unlifted results".
+data MutArr = MutArr (SmallMutableArray# RealWorld Any)
+
+newSmallArrayIO :: Int -> Any -> IO MutArr
 newSmallArrayIO (I# n#) initVal = IO $ \s0 ->
   case newSmallArray# n# initVal s0 of
-    (# s1, arr #) -> (# s1, arr #)
+    (# s1, arr #) -> (# s1, MutArr arr #)
 
 writeSmallArrayIO :: SmallMutableArray# RealWorld Any -> Int -> Any -> IO ()
 writeSmallArrayIO arr (I# i#) val = stateToIO_ (writeSmallArray# arr i# val)
@@ -213,8 +224,8 @@ registerRetriesLog :: TxLog -> IO ()
 registerRetriesLog [] = return ()
 registerRetriesLog log = do
   let n = length log
-  tvars <- newSmallArrayIO n emptyAny
-  expected <- newSmallArrayIO n emptyAny
+  MutArr tvars <- newSmallArrayIO n emptyAny
+  MutArr expected <- newSmallArrayIO n emptyAny
   let go _ [] = return ()
       go i (TxEntry (TVar tv#) expectedVal _ : rest) = do
         writeSmallArrayIO tvars i (unsafeCoerce# tv#)
@@ -227,9 +238,9 @@ commitTxLog :: TxLog -> IO Bool
 commitTxLog [] = return True
 commitTxLog log = do
   let n = length log
-  tvars <- newSmallArrayIO n emptyAny
-  expected <- newSmallArrayIO n emptyAny
-  new <- newSmallArrayIO n emptyAny
+  MutArr tvars <- newSmallArrayIO n emptyAny
+  MutArr expected <- newSmallArrayIO n emptyAny
+  MutArr new <- newSmallArrayIO n emptyAny
   let go _ [] = return ()
       go i (TxEntry (TVar tv#) expectedVal newVal : rest) = do
         writeSmallArrayIO tvars i (unsafeCoerce# tv#)
