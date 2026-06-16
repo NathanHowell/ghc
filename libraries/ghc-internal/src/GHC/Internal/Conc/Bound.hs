@@ -8,6 +8,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE Unsafe #-}
 
+
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  GHC.Internal.Conc.Bound
@@ -20,6 +21,7 @@
 --
 -- Bound thread support.
 --
+
 -----------------------------------------------------------------------------
 
 module GHC.Internal.Conc.Bound

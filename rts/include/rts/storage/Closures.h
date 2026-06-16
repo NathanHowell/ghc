@@ -494,10 +494,6 @@ typedef struct {
  *     the same field: if any thread is waiting then its expected_value for
  *     the tvar is the current value.
  *
- *   - In StgTRecHeader, it might be worthwhile having separate chunks
- *     of read-only and read-write locations.  This would save a
- *     new_value field in the read-only locations.
- *
  *   - In StgAtomicallyFrame, we could combine the waiting bit into
  *     the header (maybe a different info tbl for a waiting transaction).
  *     This means we can specialise the code for the atomically frame
@@ -505,57 +501,36 @@ typedef struct {
  */
 
 typedef struct StgTRecHeader_ StgTRecHeader;
+typedef struct StgTVar_ StgTVar;
 
 typedef struct StgTVarWatchQueue_ {
   StgHeader                  header;
   StgClosure                *closure; // StgTSO
   struct StgTVarWatchQueue_ *next_queue_entry;
   struct StgTVarWatchQueue_ *prev_queue_entry;
+  struct StgTVarWatchQueue_ *next_tso_queue_entry;
+  StgTVar                   *tvar;
+  StgClosure                *expected;
 } StgTVarWatchQueue;
 
-typedef struct {
+typedef struct StgTVar_ {
   StgHeader                  header;
   StgClosure                *current_value MUT_FIELD; /* accessed via atomics */
   StgTVarWatchQueue         *first_watch_queue_entry MUT_FIELD; /* accessed via atomics */
   StgInt                     num_updates; /* accessed via atomics */
 } StgTVar;
 
-/* new_value == expected_value for read-only accesses */
-/* new_value is a StgTVarWatchQueue entry when trec in state TREC_WAITING */
-typedef struct {
-  StgTVar                   *tvar;
-  StgClosure                *expected_value;
-  StgClosure                *new_value;
-#if defined(THREADED_RTS)
-  StgInt                     num_updates;
-#endif
-} TRecEntry;
-
-#define TREC_CHUNK_NUM_ENTRIES 16
-
-/*
- * A chunk of TVar updates (`TRecEntry`s) belonging to an in-flight STM
- * transaction.
- */
-typedef struct StgTRecChunk_ {
-  StgHeader                  header;
-  struct StgTRecChunk_      *prev_chunk;
-  StgWord                    next_entry_idx;
-  TRecEntry                  entries[TREC_CHUNK_NUM_ENTRIES];
-} StgTRecChunk;
-
 typedef enum {
   TREC_ACTIVE,        /* Transaction in progress, outcome undecided */
   TREC_CONDEMNED,     /* Transaction in progress, inconsistent / out of date reads */
-  TREC_ABORTED,       /* Transaction has aborted, now reverting tvars */
   TREC_WAITING,       /* Transaction currently waiting */
 } TRecState;
 
 /* A transactional record */
 struct StgTRecHeader_ {
   StgHeader                  header;
-  struct StgTRecHeader_     *enclosing_trec;
-  StgTRecChunk              *current_chunk MUT_FIELD;
+  struct StgTRecHeader_     *next_trec; /* free-list link; NO_TREC when active */
+  StgClosure               *plan; /* head of per-thread STM wait registrations */
   TRecState                  state;
 };
 
@@ -565,21 +540,6 @@ typedef struct {
   StgClosure *code;
   StgClosure *result;
 } StgAtomicallyFrame;
-
-/* A catch# handler introduced within an STM transaction */
-typedef struct {
-  StgHeader   header;
-  StgClosure *code;
-  StgClosure *handler;
-} StgCatchSTMFrame;
-
-/* A catchRetry# handler */
-typedef struct {
-  StgHeader      header;
-  StgWord        running_alt_code;
-  StgClosure    *first_code;
-  StgClosure    *alt_code;
-} StgCatchRetryFrame;
 
 /* ----------------------------------------------------------------------------
    Messages

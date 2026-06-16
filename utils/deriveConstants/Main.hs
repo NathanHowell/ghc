@@ -524,16 +524,8 @@ wanteds os = concat
           ,closureField C "StgAtomicallyFrame" "code"
           ,closureField C "StgAtomicallyFrame" "result"
 
-          ,closureField C "StgTRecHeader" "enclosing_trec"
-
-          ,closureSize  C "StgCatchSTMFrame"
-          ,closureField C "StgCatchSTMFrame" "handler"
-          ,closureField C "StgCatchSTMFrame" "code"
-
-          ,closureSize  C "StgCatchRetryFrame"
-          ,closureField C "StgCatchRetryFrame" "running_alt_code"
-          ,closureField C "StgCatchRetryFrame" "first_code"
-          ,closureField C "StgCatchRetryFrame" "alt_code"
+          ,closureField C "StgTRecHeader" "next_trec"
+          ,closureField C "StgTRecHeader" "plan"
 
           ,closureSize  C "StgTVar"
           ,closureField C "StgTVar" "current_value"

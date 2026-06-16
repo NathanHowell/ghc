@@ -636,22 +636,9 @@ rts_gen s = do
                                                , returnS (ApplExpr (a .! 0 .^ apply) [this, ApplExpr (a .^ slice) [1]])
                                                ])
              , closure (ClosureInfo hdAtomicallyEntryStr (CIRegs 0 [PtrV]) "atomic operation" (CILayoutFixed 1 [PtrV]) CIStackFrame mempty)
-                  (return $ ifS (app hdStmValidateTransactionStr [])
-               (appS hdStmCommitTransactionStr []
-                        <> adjSpN' 2
-                        <> returnS (stack .! sp))
-                       (returnS (app hdStmStartTransactionStr [stack .! (sp - 1)])))
-
-             , closure (ClosureInfo hdStmCatchRetryEntryStr (CIRegs 0 [PtrV]) "catch retry" (CILayoutFixed 1 [PtrV]) CIStackFrame mempty)
-                           (return $
-                             adjSpN' 2
-                             <> appS hdStmCommitTransactionStr []
-                             <> returnS (stack .! sp))
-             , closure (ClosureInfo hdStmCatchEntryStr (CIRegs 0 [PtrV]) "STM catch" (CILayoutFixed 3 [ObjV,PtrV,ObjV]) CIStackFrame mempty)
-               (return $
-                 adjSpN' 4
-                 <> appS hdStmCommitTransactionStr []
-                 <> returnS (stack .! sp))
+                  (return $
+                    adjSpN' 2
+                    <> returnS (stack .! sp))
              , closure (ClosureInfo hdStgResumeRetryEntryStr (CIRegs 0 [PtrV]) "resume retry" (CILayoutFixed 0 []) CIStackFrame mempty)
                            (jVar \blocked ->
                               return $

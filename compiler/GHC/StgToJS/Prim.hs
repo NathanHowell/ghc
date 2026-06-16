@@ -922,13 +922,16 @@ genPrim prof bound ty op = case op of
 ------------------------------- STM-accessible Mutable Variables  --------------
 
   AtomicallyOp -> \[_r] [a]   -> pure $ PRPrimCall $ returnS (app hdAtomicallyStr [a])
-  RetryOp      -> \_r   []    -> pure $ PRPrimCall $ returnS (app hdStmRetryStr [])
-  CatchRetryOp -> \[_r] [a,b] -> pure $ PRPrimCall $ returnS (app hdStmCatchRetryStr [a,b])
-  CatchSTMOp   -> \[_r] [a,h] -> pure $ PRPrimCall $ returnS (app hdCatchStmStr [a,h])
+  StmCommitLogOp -> \[r] [tvars, expected, newvals, flags, len] -> pure $ PrimInline $
+    r |= app hdStmCommitLogStr [tvars, expected, newvals, flags, len]
+  RegisterWaitOp -> \[] [tvar, expected] -> pure $ PrimInline $
+    appS hdRegisterWaitStr [tvar, expected]
+  BlockOnRegisteredOp -> \[_r] [] -> pure $ PRPrimCall $
+    returnS (app hdBlockOnRegisteredStr [])
+  ClearRegistrationsOp -> \[] [] -> pure $ PrimInline $
+    appS hdClearRegistrationsStr []
   NewTVarOp    -> \[tv] [v]   -> pure $ PrimInline $ tv |= app hdNewTVar    [v]
-  ReadTVarOp   -> \[r] [tv]   -> pure $ PrimInline $ r  |= app hdReadTVar   [tv]
   ReadTVarIOOp -> \[r] [tv]   -> pure $ PrimInline $ r  |= app hdReadTVarIO [tv]
-  WriteTVarOp  -> \[] [tv,v]  -> pure $ PrimInline $ appS hdWriteTVar [tv,v]
 
 ------------------------------- Synchronized Mutable Variables ------------------
 

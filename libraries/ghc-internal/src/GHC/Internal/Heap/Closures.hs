@@ -531,19 +531,6 @@ data GenStackFrame b =
       , handler             :: !b
       }
 
-  | CatchStmFrame
-      { info_tbl            :: !StgInfoTable
-      , catchFrameCode      :: !b
-      , handler             :: !b
-      }
-
-  | CatchRetryFrame
-      { info_tbl            :: !StgInfoTable
-      , running_alt_code    :: !Word
-      , first_code          :: !b
-      , alt_code            :: !b
-      }
-
   | AtomicallyFrame
       { info_tbl            :: !StgInfoTable
       , atomicallyFrameCode :: !b

@@ -1707,9 +1707,9 @@ Apparently, exception handling prim-ops didn't use to have any special
 strictness signatures, thus defaulting to nopSig, which assumes they use their
 arguments lazily. Joachim was the first to realise that we could provide richer
 information. Thus, in 0558911f91c (Dec 13), he added signatures to
-primops.txt.pp indicating that functions like `catch#` and `catchRetry#` call
-their argument, which is useful information for usage analysis. Still with a
-'Lazy' strictness demand (i.e. 'lazyApply1Dmd'), though, and the world was fine.
+primops.txt.pp indicating that functions like `catch#` call their argument,
+which is useful information for usage analysis. Still with a 'Lazy' strictness
+demand (i.e. 'lazyApply1Dmd'), though, and the world was fine.
 
 In 7c0fff4 (July 15), Simon argued that giving `catch#` et al. a
 'strictApply1Dmd' leads to substantial performance gains. That was at the cost
@@ -1726,10 +1726,10 @@ adding a 'ThrowsExn' constructor to the 'Divergence' lattice as an element
 between 'Dunno' and 'Diverges'. Then along came #11555 and finally #13330,
 so we had to revert to 'lazyApply1Dmd' again in 701256df88c (Mar 17).
 
-This left the other variants like 'catchRetry#' having 'catchArgDmd', which is
-where #14998 picked up. Item 1 was concerned with measuring the impact of also
-making `catchRetry#` and `catchSTM#` have 'lazyApply1Dmd'. The result was that
-there was none. We removed the last usages of 'catchArgDmd' in 00b8ecb7
+This left the other variants having 'catchArgDmd', which is where #14998 picked
+up. Item 1 was concerned with measuring the impact of also making the other
+catch-style primops have 'lazyApply1Dmd'. The result was that there was none.
+We removed the last usages of 'catchArgDmd' in 00b8ecb7
 (Apr 18). There was a lot of dead code resulting from that change, that we
 removed in ef6b283 (Jan 19): We got rid of 'ThrowsExn' and 'ExnStr' again and
 removed any code that was dealing with the peculiarities.

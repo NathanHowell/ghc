@@ -95,7 +95,7 @@ also look for any stack frames that would indicate we’ve gone astray:
   1. If we see a STOP_FRAME, we’ve just plain run out of stack frames.
   2. To identify thunk updates, we can just look for UPDATE_FRAMEs.
   3. To identify STM transactions, we look for STM-related frames, namely
-     ATOMICALLY_FRAME, CATCH_RETRY_FRAME, or CATCH_STM_FRAME.
+     ATOMICALLY_FRAME.
 
 If it finds any of these frames before a matching prompt frame,
 `captureContinuationAndAbort` returns NULL, which `stg_control0zh` treats as a
@@ -435,9 +435,7 @@ StgClosure *captureContinuationAndAbort(Capability *cap, StgTSO *tso, StgPromptT
     // see Note [When capturing the continuation fails] for details
     if (RTS_UNLIKELY(info->i.type == STOP_FRAME
                   || info->i.type == UPDATE_FRAME
-                  || info->i.type == ATOMICALLY_FRAME
-                  || info->i.type == CATCH_RETRY_FRAME
-                  || info->i.type == CATCH_STM_FRAME)) {
+                  || info->i.type == ATOMICALLY_FRAME)) {
       IF_DEBUG(continuation,
         debugBelch("captureContinuationAndAbort: could not find prompt, bailing out\n"));
       return NULL; // Bail out

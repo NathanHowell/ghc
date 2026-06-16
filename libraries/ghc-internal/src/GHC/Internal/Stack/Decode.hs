@@ -437,28 +437,6 @@ unpackStackFrameTo (StackSnapshot stackSnapshot#, index) unpackUnderflowFrame fi
                 atomicallyFrameCode = atomicallyFrameCode',
                 result = result'
               }
-        CATCH_RETRY_FRAME ->
-          let running_alt_code' = getWord stackSnapshot# (index + offsetStgCatchRetryFrameRunningAltCode)
-              first_code' = getClosureBox stackSnapshot# (index + offsetStgCatchRetryFrameRunningFirstCode)
-              alt_code' = getClosureBox stackSnapshot# (index + offsetStgCatchRetryFrameAltCode)
-          in
-            mkStackFrameResult $
-              CatchRetryFrame
-                { info_tbl = info,
-                  running_alt_code = running_alt_code',
-                  first_code = first_code',
-                  alt_code = alt_code'
-                }
-        CATCH_STM_FRAME ->
-          let catchFrameCode' = getClosureBox stackSnapshot# (index + offsetStgCatchSTMFrameCode)
-              handler' = getClosureBox stackSnapshot# (index + offsetStgCatchSTMFrameHandler)
-          in
-            mkStackFrameResult $
-              CatchStmFrame
-                { info_tbl = info,
-                  catchFrameCode = catchFrameCode',
-                  handler = handler'
-                }
         ANN_FRAME ->
           let annotation = getClosureBox stackSnapshot# (index + offsetStgAnnFrameAnn)
            in

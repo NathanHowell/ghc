@@ -437,65 +437,52 @@ function h$throw(e, async) {
       throw("h$throw: invalid object while unwinding stack");
     }
     if(f === h$catch_e) break;
-    if(f === h$atomically_e) {
-      if(async) { // async exceptions always propagate
-        h$currentThread.transaction = null;
-      } else if(!h$stmValidateTransaction()) { // restart transaction if invalid, don't propagate exception
-        return h$stmStartTransaction(h$stack[h$sp]);
-    }
-  }
-  if(f === h$catchStm_e && !async) break; // catchSTM only catches sync
-  if(f === h$upd_frame) {
-    var t = h$stack[h$sp-1];
-    // wake up threads blocked on blackhole
-    var waiters = t.d2;
-    if(waiters !== null) {
-      for(var i=0;i<waiters.length;i++) {
-        h$wakeupThread(waiters[i]);
+    if(f === h$upd_frame) {
+      var t = h$stack[h$sp-1];
+      // wake up threads blocked on blackhole
+      var waiters = t.d2;
+      if(waiters !== null) {
+        for(var i=0;i<waiters.length;i++) {
+          h$wakeupThread(waiters[i]);
+        }
       }
-    }
-    if(async) {
-      // convert blackhole back to thunk
-      if(lastBh === null) {
-        h$makeResumable(t,h$sp+1,origSp,[]); // [`R1`,h$return]);
+      if(async) {
+        // convert blackhole back to thunk
+        if(lastBh === null) {
+          h$makeResumable(t,h$sp+1,origSp,[]); // [`R1`,h$return]);
+        } else {
+          h$makeResumable(t,h$sp+1,lastBh-2,[h$ap_0_0,h$stack[lastBh-1],h$return]);
+        }
+        lastBh = h$sp;
       } else {
-        h$makeResumable(t,h$sp+1,lastBh-2,[h$ap_0_0,h$stack[lastBh-1],h$return]);
+        // just raise the exception in the thunk
+        t.f = h$raise_e;
+        t.d1 = e;
+        t.d2 = null;
       }
-      lastBh = h$sp;
-    } else {
-      // just raise the exception in the thunk
-      t.f = h$raise_e;
-      t.d1 = e;
-      t.d2 = null;
     }
+    var size = h$stackFrameSize(f);
+    h$sp = h$sp - size;
   }
-  var size = h$stackFrameSize(f);
-  h$sp = h$sp - size;
-}
 //h$log("unwound stack to: " + `Sp`);
 //h$dumpStackTop(`Stack`,0,origSp);
 if(h$sp > 0) {
   var maskStatus = h$stack[h$p - 2];
   var handler = h$stack[h$sp - 1];
-  if(f === h$catchStm_e) {
-    h$currentThread.transaction = h$stack[h$sp-3];
-    h$sp -= 4;
-  } else if(h$sp > 3) { // don't pop the toplevel handler
-  h$sp -= 3;
-}
-h$r1 = handler;
-h$r2 = e;
-if(f !== h$catchStm_e) {  // don't clobber mask in STM?
-if(maskStatus === 0 && h$stack[h$sp] !== h$maskFrame && h$stack[h$sp] !== h$maskUnintFrame) {
-  h$stack[h$sp+1] = h$unmaskFrame;
-  h$sp += 1;
-} else if(maskStatus === 1) {
-  h$stack[h$sp+1] = h$maskUnintFrame;
-  h$sp += 1;
-}
-h$currentThread.mask = 2;
-}
-return h$ap_2_1_fast();
+  if(h$sp > 3) { // don't pop the toplevel handler
+    h$sp -= 3;
+  }
+  h$r1 = handler;
+  h$r2 = e;
+  if(maskStatus === 0 && h$stack[h$sp] !== h$maskFrame && h$stack[h$sp] !== h$maskUnintFrame) {
+    h$stack[h$sp+1] = h$unmaskFrame;
+    h$sp += 1;
+  } else if(maskStatus === 1) {
+    h$stack[h$sp+1] = h$maskUnintFrame;
+    h$sp += 1;
+  }
+  h$currentThread.mask = 2;
+  return h$ap_2_1_fast();
 } else {
   throw "unhandled exception in haskell thread";
 }

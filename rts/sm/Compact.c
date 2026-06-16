@@ -343,8 +343,6 @@ thread_stack(P_ p, P_ stack_end)
         switch (info->i.type) {
 
             // small bitmap (<= 32 entries, or 64 on a 64-bit machine)
-        case CATCH_RETRY_FRAME:
-        case CATCH_STM_FRAME:
         case ATOMICALLY_FRAME:
         case UPDATE_FRAME:
         case UNDERFLOW_FRAME:
@@ -622,19 +620,6 @@ update_fwd_large( bdescr *bd )
         thread_PAP((StgPAP *)p);
         continue;
 
-    case TREC_CHUNK:
-    {
-        StgTRecChunk *tc = (StgTRecChunk *)p;
-        TRecEntry *e = &(tc -> entries[0]);
-        thread_(&tc->prev_chunk);
-        for (W_ i = 0; i < tc -> next_entry_idx; i ++, e++ ) {
-          thread_(&e->tvar);
-          thread(&e->expected_value);
-          thread(&e->new_value);
-        }
-        continue;
-    }
-
     case CONTINUATION:
         thread_continuation((StgContinuation *)p);
         continue;
@@ -810,19 +795,6 @@ thread_obj (const StgInfoTable *info, P_ p)
         StgStack *stack = (StgStack*)p;
         thread_stack(stack->sp, stack->stack + stack->stack_size);
         return p + stack_sizeW(stack);
-    }
-
-    case TREC_CHUNK:
-    {
-        StgTRecChunk *tc = (StgTRecChunk *)p;
-        TRecEntry *e = &(tc -> entries[0]);
-        thread_(&tc->prev_chunk);
-        for (W_ i = 0; i < tc -> next_entry_idx; i ++, e++ ) {
-          thread_(&e->tvar);
-          thread(&e->expected_value);
-          thread(&e->new_value);
-        }
-        return p + sizeofW(StgTRecChunk);
     }
 
     case CONTINUATION:

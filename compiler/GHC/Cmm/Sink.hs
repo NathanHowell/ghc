@@ -857,10 +857,8 @@ data AbsMem
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 -- It is tempting to say that foreign calls clobber only
 -- non-heap/stack memory, but unfortunately we break this invariant in
--- the RTS.  For example, in stg_catch_retry_frame we call
--- stmCommitNestedTransaction() which modifies the contents of the
--- TRec it is passed (this actually caused incorrect code to be
--- generated).
+-- the RTS.  For example, STM primops can mutate heap-resident log
+-- arrays and TVars during commit and wait.
 --
 -- Since the invariant is true for the majority of foreign calls,
 -- perhaps we ought to have a special annotation for calls that can

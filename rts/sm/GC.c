@@ -261,7 +261,6 @@ addMutListScavStats(const MutListScavStats *src,
     ADD_STATS(n_MUTARR);
     ADD_STATS(n_MVAR);
     ADD_STATS(n_TVAR);
-    ADD_STATS(n_TREC_CHUNK);
     ADD_STATS(n_TVAR_WATCH_QUEUE);
     ADD_STATS(n_TREC_HEADER);
     ADD_STATS(n_OTHERS);
@@ -694,14 +693,13 @@ GarbageCollect (struct GcConfig config,
 
 #if defined(DEBUG)
         debugTrace(DEBUG_gc,
-                   "mut_list_size: %lu (%d vars, %d arrays, %d MVARs, %d TVARs, %d TVAR_WATCH_QUEUEs, %d TREC_CHUNKs, %d TREC_HEADERs, %d others)",
+                   "mut_list_size: %lu (%d vars, %d arrays, %d MVARs, %d TVARs, %d TVAR_WATCH_QUEUEs, %d TREC_HEADERs, %d others)",
                    (unsigned long)(mut_list_size * sizeof(W_)),
                    mutlist_scav_stats.n_MUTVAR,
                    mutlist_scav_stats.n_MUTARR,
                    mutlist_scav_stats.n_MVAR,
                    mutlist_scav_stats.n_TVAR,
                    mutlist_scav_stats.n_TVAR_WATCH_QUEUE,
-                   mutlist_scav_stats.n_TREC_CHUNK,
                    mutlist_scav_stats.n_TREC_HEADER,
                    mutlist_scav_stats.n_OTHERS);
 #endif

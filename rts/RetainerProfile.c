@@ -193,7 +193,6 @@ isRetainer( const StgClosure *c )
     case ARR_WORDS:
     case COMPACT_NFDATA:
         // STM
-    case TREC_CHUNK:
         // immutable arrays
     case MUT_ARR_PTRS_FROZEN_CLEAN:
     case MUT_ARR_PTRS_FROZEN_DIRTY:
@@ -208,8 +207,6 @@ isRetainer( const StgClosure *c )
         // legal objects during retainer profiling.
     case UPDATE_FRAME:
     case CATCH_FRAME:
-    case CATCH_RETRY_FRAME:
-    case CATCH_STM_FRAME:
     case UNDERFLOW_FRAME:
     case ATOMICALLY_FRAME:
     case STOP_FRAME:

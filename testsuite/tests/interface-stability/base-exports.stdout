@@ -3598,6 +3598,7 @@ module GHC.Base where
   bitReverse32# :: Word# -> Word#
   bitReverse64# :: Word64# -> Word64#
   bitReverse8# :: Word# -> Word#
+  blockOnRegistered# :: forall d. State# d -> (# State# d, Int# #)
   breakpoint :: forall a. a -> a
   breakpointCond :: forall a. Bool -> a -> a
   broadcastDoubleX2# :: Double# -> DoubleX2#
@@ -3649,10 +3650,9 @@ module GHC.Base where
   castWord32ToFloat# :: Word32# -> Float#
   castWord64ToDouble# :: Word64# -> Double#
   catch# :: forall {q :: RuntimeRep} {k :: Levity} (a :: TYPE q) (b :: TYPE (BoxedRep k)). (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
-  catchRetry# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). (State# RealWorld -> (# State# RealWorld, a #)) -> (State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
-  catchSTM# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)) b. (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
   chr# :: Int# -> Char#
   clearCCS# :: forall d a. (State# d -> (# State# d, a #)) -> State# d -> (# State# d, a #)
+  clearRegistrations# :: forall d. State# d -> State# d
   cloneArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). Array# a -> Int# -> Int# -> Array# a
   cloneMutableArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). MutableArray# d a -> Int# -> Int# -> State# d -> (# State# d, MutableArray# d a #)
   cloneSmallArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). SmallArray# a -> Int# -> Int# -> SmallArray# a
@@ -4493,7 +4493,6 @@ module GHC.Base where
   readSmallArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). SmallMutableArray# d a -> Int# -> State# d -> (# State# d, a #)
   readStablePtrArray# :: forall d a. MutableByteArray# d -> Int# -> State# d -> (# State# d, StablePtr# a #)
   readStablePtrOffAddr# :: forall d a. Addr# -> Int# -> State# d -> (# State# d, StablePtr# a #)
-  readTVar# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). TVar# d a -> State# d -> (# State# d, a #)
   readTVarIO# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). TVar# d a -> State# d -> (# State# d, a #)
   readWideCharArray# :: forall d. MutableByteArray# d -> Int# -> State# d -> (# State# d, Char# #)
   readWideCharOffAddr# :: forall d. Addr# -> Int# -> State# d -> (# State# d, Char# #)
@@ -4586,6 +4585,7 @@ module GHC.Base where
   realWorld# :: State# RealWorld
   reallyUnsafePtrEquality :: forall a. a -> a -> Int#
   reallyUnsafePtrEquality# :: forall {l :: Levity} {k :: Levity} (a :: TYPE (BoxedRep l)) (b :: TYPE (BoxedRep k)). a -> b -> Int#
+  registerWait# :: forall d a. TVar# d a -> a -> State# d -> State# d
   remAddr# :: Addr# -> Int# -> Int#
   remInt :: Int -> Int -> Int
   remInt# :: Int# -> Int# -> Int#
@@ -4623,7 +4623,6 @@ module GHC.Base where
   remWord8X32# :: Word8X32# -> Word8X32# -> Word8X32#
   remWord8X64# :: Word8X64# -> Word8X64# -> Word8X64#
   resizeMutableByteArray# :: forall d. MutableByteArray# d -> Int# -> State# d -> (# State# d, MutableByteArray# d #)
-  retry# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). State# RealWorld -> (# State# RealWorld, a #)
   returnIO :: forall a. a -> IO a
   rightSection :: forall {q :: RuntimeRep} {r :: RuntimeRep} {s :: RuntimeRep} (a :: TYPE q) (b :: TYPE r) (c :: TYPE s). (a -> b -> c) -> b -> a -> c
   runRW# :: forall (r :: RuntimeRep) (o :: TYPE r). (State# RealWorld -> o) -> o
@@ -4663,6 +4662,7 @@ module GHC.Base where
   sqrtDouble# :: Double# -> Double#
   sqrtFloat# :: Float# -> Float#
   stableNameToInt# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). StableName# a -> Int#
+  stmCommitLog# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> MutableByteArray# RealWorld -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   subInt16# :: Int16# -> Int16# -> Int16#
   subInt32# :: Int32# -> Int32# -> Int32#
   subInt64# :: Int64# -> Int64# -> Int64#
@@ -4923,7 +4923,6 @@ module GHC.Base where
   writeSmallArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). SmallMutableArray# d a -> Int# -> a -> State# d -> State# d
   writeStablePtrArray# :: forall d a. MutableByteArray# d -> Int# -> StablePtr# a -> State# d -> State# d
   writeStablePtrOffAddr# :: forall a d. Addr# -> Int# -> StablePtr# a -> State# d -> State# d
-  writeTVar# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). TVar# d a -> a -> State# d -> State# d
   writeWideCharArray# :: forall d. MutableByteArray# d -> Int# -> Char# -> State# d -> State# d
   writeWideCharOffAddr# :: forall d. Addr# -> Int# -> Char# -> State# d -> State# d
   writeWord16Array# :: forall d. MutableByteArray# d -> Int# -> Word16# -> State# d -> State# d
@@ -5722,6 +5721,7 @@ module GHC.Exts where
   bitReverse32# :: Word# -> Word#
   bitReverse64# :: Word64# -> Word64#
   bitReverse8# :: Word# -> Word#
+  blockOnRegistered# :: forall d. State# d -> (# State# d, Int# #)
   breakpoint :: forall a. a -> a
   breakpointCond :: forall a. Bool -> a -> a
   broadcastDoubleX2# :: Double# -> DoubleX2#
@@ -5773,10 +5773,9 @@ module GHC.Exts where
   castWord32ToFloat# :: Word32# -> Float#
   castWord64ToDouble# :: Word64# -> Double#
   catch# :: forall {q :: RuntimeRep} {k :: Levity} (a :: TYPE q) (b :: TYPE (BoxedRep k)). (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
-  catchRetry# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). (State# RealWorld -> (# State# RealWorld, a #)) -> (State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
-  catchSTM# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)) b. (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
   chr# :: Int# -> Char#
   clearCCS# :: forall d a. (State# d -> (# State# d, a #)) -> State# d -> (# State# d, a #)
+  clearRegistrations# :: forall d. State# d -> State# d
   cloneArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). Array# a -> Int# -> Int# -> Array# a
   cloneMutableArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). MutableArray# d a -> Int# -> Int# -> State# d -> (# State# d, MutableArray# d a #)
   cloneSmallArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). SmallArray# a -> Int# -> Int# -> SmallArray# a
@@ -6568,7 +6567,6 @@ module GHC.Exts where
   readSmallArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). SmallMutableArray# d a -> Int# -> State# d -> (# State# d, a #)
   readStablePtrArray# :: forall d a. MutableByteArray# d -> Int# -> State# d -> (# State# d, StablePtr# a #)
   readStablePtrOffAddr# :: forall d a. Addr# -> Int# -> State# d -> (# State# d, StablePtr# a #)
-  readTVar# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). TVar# d a -> State# d -> (# State# d, a #)
   readTVarIO# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). TVar# d a -> State# d -> (# State# d, a #)
   readWideCharArray# :: forall d. MutableByteArray# d -> Int# -> State# d -> (# State# d, Char# #)
   readWideCharOffAddr# :: forall d. Addr# -> Int# -> State# d -> (# State# d, Char# #)
@@ -6661,6 +6659,7 @@ module GHC.Exts where
   realWorld# :: State# RealWorld
   reallyUnsafePtrEquality :: forall a. a -> a -> Int#
   reallyUnsafePtrEquality# :: forall {l :: Levity} {k :: Levity} (a :: TYPE (BoxedRep l)) (b :: TYPE (BoxedRep k)). a -> b -> Int#
+  registerWait# :: forall d a. TVar# d a -> a -> State# d -> State# d
   remAddr# :: Addr# -> Int# -> Int#
   remInt# :: Int# -> Int# -> Int#
   remInt16# :: Int16# -> Int16# -> Int16#
@@ -6698,7 +6697,6 @@ module GHC.Exts where
   remWord8X64# :: Word8X64# -> Word8X64# -> Word8X64#
   resizeMutableByteArray# :: forall d. MutableByteArray# d -> Int# -> State# d -> (# State# d, MutableByteArray# d #)
   resizeSmallMutableArray# :: forall s a. SmallMutableArray# s a -> Int# -> a -> State# s -> (# State# s, SmallMutableArray# s a #)
-  retry# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). State# RealWorld -> (# State# RealWorld, a #)
   rightSection :: forall {q :: RuntimeRep} {r :: RuntimeRep} {s :: RuntimeRep} (a :: TYPE q) (b :: TYPE r) (c :: TYPE s). (a -> b -> c) -> b -> a -> c
   runRW# :: forall (r :: RuntimeRep) (o :: TYPE r). (State# RealWorld -> o) -> o
   sameArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). Array# a -> Array# a -> Int#
@@ -6740,6 +6738,7 @@ module GHC.Exts where
   sqrtDouble# :: Double# -> Double#
   sqrtFloat# :: Float# -> Float#
   stableNameToInt# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). StableName# a -> Int#
+  stmCommitLog# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> MutableByteArray# RealWorld -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   subInt16# :: Int16# -> Int16# -> Int16#
   subInt32# :: Int32# -> Int32# -> Int32#
   subInt64# :: Int64# -> Int64# -> Int64#
@@ -6999,7 +6998,6 @@ module GHC.Exts where
   writeSmallArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). SmallMutableArray# d a -> Int# -> a -> State# d -> State# d
   writeStablePtrArray# :: forall d a. MutableByteArray# d -> Int# -> StablePtr# a -> State# d -> State# d
   writeStablePtrOffAddr# :: forall a d. Addr# -> Int# -> StablePtr# a -> State# d -> State# d
-  writeTVar# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). TVar# d a -> a -> State# d -> State# d
   writeWideCharArray# :: forall d. MutableByteArray# d -> Int# -> Char# -> State# d -> State# d
   writeWideCharOffAddr# :: forall d. Addr# -> Int# -> Char# -> State# d -> State# d
   writeWord16Array# :: forall d. MutableByteArray# d -> Int# -> Word16# -> State# d -> State# d

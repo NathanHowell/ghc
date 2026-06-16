@@ -829,23 +829,6 @@ scavenge_block (bdescr *bd)
         break;
       }
 
-    case TREC_CHUNK:
-      {
-        StgWord i;
-        StgTRecChunk *tc = ((StgTRecChunk *) p);
-        TRecEntry *e = &(tc -> entries[0]);
-        gct->eager_promotion = false;
-        evacuate((StgClosure **)&tc->prev_chunk);
-        for (i = 0; i < tc -> next_entry_idx; i ++, e++ ) {
-          evacuate((StgClosure **)&e->tvar);
-          evacuate((StgClosure **)&e->expected_value);
-          evacuate((StgClosure **)&e->new_value);
-        }
-        gct->eager_promotion = saved_eager_promotion;
-        gct->failed_to_evac = true; // mutable
-        p += sizeofW(StgTRecChunk);
-        break;
-      }
 
     case CONTINUATION:
         p = scavenge_continuation((StgContinuation *)p);
@@ -1226,23 +1209,6 @@ scavenge_mark_stack(void)
             break;
         }
 
-        case TREC_CHUNK:
-          {
-            StgWord i;
-            StgTRecChunk *tc = ((StgTRecChunk *) p);
-            TRecEntry *e = &(tc -> entries[0]);
-            gct->eager_promotion = false;
-            evacuate((StgClosure **)&tc->prev_chunk);
-            for (i = 0; i < tc -> next_entry_idx; i ++, e++ ) {
-              evacuate((StgClosure **)&e->tvar);
-              evacuate((StgClosure **)&e->expected_value);
-              evacuate((StgClosure **)&e->new_value);
-            }
-            gct->eager_promotion = saved_eager_promotion;
-            gct->failed_to_evac = true; // mutable
-            break;
-          }
-
         case CONTINUATION:
             scavenge_continuation((StgContinuation *)p);
             break;
@@ -1550,23 +1516,6 @@ try_again:
 
     }
 
-    case TREC_CHUNK:
-      {
-        StgWord i;
-        StgTRecChunk *tc = ((StgTRecChunk *) p);
-        TRecEntry *e = &(tc -> entries[0]);
-        gct->eager_promotion = false;
-        evacuate((StgClosure **)&tc->prev_chunk);
-        for (i = 0; i < tc -> next_entry_idx; i ++, e++ ) {
-          evacuate((StgClosure **)&e->tvar);
-          evacuate((StgClosure **)&e->expected_value);
-          evacuate((StgClosure **)&e->new_value);
-        }
-        gct->eager_promotion = saved_eager_promotion;
-        gct->failed_to_evac = true; // mutable
-        break;
-      }
-
     case IND:
         // IND can happen, for example, when the interpreter allocates
         // a gigantic AP closure (more than one block), which ends up
@@ -1677,8 +1626,6 @@ scavenge_mutable_list(bdescr *bd, generation *gen)
                 stats.n_MVAR++; break;
             case TVAR:
                 stats.n_TVAR++; break;
-            case TREC_CHUNK:
-                stats.n_TREC_CHUNK++; break;
             case MUT_PRIM:
                 pinfo = ((StgClosure*)p)->header.info;
                 if (pinfo == &stg_TVAR_WATCH_QUEUE_info)
@@ -1984,8 +1931,6 @@ scavenge_stack(StgPtr p, StgPtr stack_end)
     }
 
       // small bitmap (< 32 entries, or 64 on a 64-bit machine)
-    case CATCH_STM_FRAME:
-    case CATCH_RETRY_FRAME:
     case ATOMICALLY_FRAME:
     case UNDERFLOW_FRAME:
     case STOP_FRAME:

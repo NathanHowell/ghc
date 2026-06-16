@@ -52,6 +52,7 @@ import GHC.Internal.TH.Monad
 import GHC.Internal.Control.Exception
 import GHC.Internal.Control.Arrow
 import GHC.Internal.Types ( IO )
+import GHC.Internal.Conc.Sync (STM, mfixSTM)
 
 -- | Monads having fixed points with a \'knot-tying\' semantics.
 -- Instances of 'MonadFix' should satisfy the following laws:
@@ -193,6 +194,10 @@ fixIO k = do
 --
 -- See also System.IO.Unsafe.unsafeFixIO.
 --
+
+-- | @since base-4.22.0.0
+instance MonadFix STM where
+    mfix = mfixSTM
 
 -- | @since base-2.01
 instance MonadFix ((->) r) where

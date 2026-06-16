@@ -511,6 +511,18 @@
         R3 = fun;                               \
         jump stg_gc_prim_pp_ll [R1,R2,R3];
 
+#define GC_PRIM_PPP(fun,arg1,arg2,arg3)         \
+        jump stg_gc_prim_ppp(arg1,arg2,arg3,fun);
+
+#define GC_PRIM_PPPP(fun,arg1,arg2,arg3,arg4)   \
+        jump stg_gc_prim_pppp(arg1,arg2,arg3,arg4,fun);
+
+#define GC_PRIM_PPPW(fun,arg1,arg2,arg3,arg4)   \
+        jump stg_gc_prim_pppw(arg1,arg2,arg3,arg4,fun);
+
+#define GC_PRIM_PPWW(fun,arg1,arg2,arg3,arg4)   \
+        jump stg_gc_prim_ppww(arg1,arg2,arg3,arg4,fun);
+
 #define MAYBE_GC_(fun)                          \
     if (CHECK_GC()) {                           \
         HpAlloc = 0;                            \
@@ -533,6 +545,30 @@
     if (CHECK_GC()) {                           \
         HpAlloc = 0;                            \
         GC_PRIM_PP(fun,arg1,arg2)               \
+   }
+
+#define MAYBE_GC_PPP(fun,arg1,arg2,arg3)        \
+    if (CHECK_GC()) {                           \
+        HpAlloc = 0;                            \
+        GC_PRIM_PPP(fun,arg1,arg2,arg3)         \
+   }
+
+#define MAYBE_GC_PPPP(fun,arg1,arg2,arg3,arg4)  \
+    if (CHECK_GC()) {                           \
+        HpAlloc = 0;                            \
+        GC_PRIM_PPPP(fun,arg1,arg2,arg3,arg4)   \
+   }
+
+#define MAYBE_GC_PPPW(fun,arg1,arg2,arg3,arg4)  \
+    if (CHECK_GC()) {                           \
+        HpAlloc = 0;                            \
+        GC_PRIM_PPPW(fun,arg1,arg2,arg3,arg4)   \
+   }
+
+#define MAYBE_GC_PPWW(fun,arg1,arg2,arg3,arg4)  \
+    if (CHECK_GC()) {                           \
+        HpAlloc = 0;                            \
+        GC_PRIM_PPWW(fun,arg1,arg2,arg3,arg4)   \
    }
 
 #define STK_CHK_LL(n, fun)                      \

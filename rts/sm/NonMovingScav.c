@@ -401,23 +401,6 @@ nonmovingScavengeOne (StgClosure *q)
         break;
     }
 
-    case TREC_CHUNK:
-      {
-        StgWord i;
-        StgTRecChunk *tc = ((StgTRecChunk *) p);
-        TRecEntry *e = &(tc -> entries[0]);
-        gct->eager_promotion = false;
-        evacuate((StgClosure **)&tc->prev_chunk);
-        for (i = 0; i < tc -> next_entry_idx; i ++, e++ ) {
-          evacuate((StgClosure **)&e->tvar);
-          evacuate((StgClosure **)&e->expected_value);
-          evacuate((StgClosure **)&e->new_value);
-        }
-        gct->eager_promotion = saved_eager_promotion;
-        gct->failed_to_evac = true; // mutable
-        break;
-      }
-
     case IND:
     case BLACKHOLE:
     case IND_STATIC:

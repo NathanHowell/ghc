@@ -41,7 +41,6 @@ bool isInherentlyUsed( StgHalfWord closure_type )
     case BCO:
     case PRIM:
     case MUT_PRIM:
-    case TREC_CHUNK:
         return true;
 
     default:
@@ -151,8 +150,6 @@ processHeapClosureForDead( const StgClosure *c )
     case RET_BCO:
     case RET_SMALL:
     case RET_BIG:
-    case CATCH_STM_FRAME:
-    case CATCH_RETRY_FRAME:
     case ATOMICALLY_FRAME:
     case ANN_FRAME:
         // others

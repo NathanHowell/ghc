@@ -727,6 +727,18 @@ hdStmRemoveBlockedThreadStr = fsLit "h$stmRemoveBlockedThread"
 hdStmStartTransactionStr :: FastString
 hdStmStartTransactionStr = fsLit "h$stmStartTransaction"
 
+hdStmCommitLogStr :: FastString
+hdStmCommitLogStr = fsLit "h$stmCommitLog"
+
+hdRegisterWaitStr :: FastString
+hdRegisterWaitStr = fsLit "h$registerWait"
+
+hdBlockOnRegisteredStr :: FastString
+hdBlockOnRegisteredStr = fsLit "h$blockOnRegistered"
+
+hdClearRegistrationsStr :: FastString
+hdClearRegistrationsStr = fsLit "h$clearRegistrations"
+
 hdAtomicallyEntry :: JStgExpr
 hdAtomicallyEntry = global (identFS hdAtomicallyEntryStr)
 
@@ -741,33 +753,6 @@ hdStgResumeRetryEntry = global (identFS hdStgResumeRetryEntryStr)
 
 hdStgResumeRetryEntryStr :: Ident
 hdStgResumeRetryEntryStr = name $ fsLit "h$stmResumeRetry_e"
-
-hdStmCommitTransactionStr :: FastString
-hdStmCommitTransactionStr = fsLit "h$stmCommitTransaction"
-
-hdStmValidateTransactionStr :: FastString
-hdStmValidateTransactionStr = "h$stmValidateTransaction"
-
-hdStmCatchRetryEntry :: JStgExpr
-hdStmCatchRetryEntry = global (identFS hdStmCatchRetryEntryStr)
-
-hdStmCatchRetryEntryStr :: Ident
-hdStmCatchRetryEntryStr = name $ fsLit "h$stmCatchRetry_e"
-
-hdStmRetryStr :: FastString
-hdStmRetryStr = fsLit "h$stmRetry"
-
-hdStmCatchRetryStr :: FastString
-hdStmCatchRetryStr = fsLit "h$stmCatchRetry"
-
-hdStmCatchEntry :: JStgExpr
-hdStmCatchEntry = global (identFS hdStmCatchEntryStr)
-
-hdCatchStmStr :: FastString
-hdCatchStmStr = fsLit "h$catchStm"
-
-hdStmCatchEntryStr :: Ident
-hdStmCatchEntryStr = name $ fsLit "h$catchStm_e"
 
 hdRetryInterrupted :: JStgExpr
 hdRetryInterrupted = global (identFS hdRetryInterruptedStr)

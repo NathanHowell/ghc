@@ -124,9 +124,8 @@ import           GHC.Internal.Maybe (Maybe(..))
 import           GHC.Internal.Prim (Addr#)
 import           GHC.Internal.Show
 -- import GHC.Internal.Exception hiding ( Exception )
-import           GHC.Internal.Conc.Sync
-
 import           GHC.Internal.Data.Either
+import           GHC.Internal.Conc.Sync    (throwTo)
 
 -----------------------------------------------------------------------------
 -- Catching exceptions

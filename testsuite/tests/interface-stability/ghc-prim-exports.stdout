@@ -1508,6 +1508,7 @@ module GHC.Prim where
   bitReverse32# :: Word# -> Word#
   bitReverse64# :: Word64# -> Word64#
   bitReverse8# :: Word# -> Word#
+  blockOnRegistered# :: forall d. State# d -> (# State# d, Int# #)
   broadcastDoubleX2# :: Double# -> DoubleX2#
   broadcastDoubleX4# :: Double# -> DoubleX4#
   broadcastDoubleX8# :: Double# -> DoubleX8#
@@ -1556,10 +1557,9 @@ module GHC.Prim where
   castWord32ToFloat# :: Word32# -> Float#
   castWord64ToDouble# :: Word64# -> Double#
   catch# :: forall {q :: GHC.Internal.Types.RuntimeRep} {k :: GHC.Internal.Types.Levity} (a :: TYPE q) (b :: TYPE (GHC.Internal.Types.BoxedRep k)). (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
-  catchRetry# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). (State# RealWorld -> (# State# RealWorld, a #)) -> (State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
-  catchSTM# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)) b. (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
   chr# :: Int# -> Char#
   clearCCS# :: forall d a. (State# d -> (# State# d, a #)) -> State# d -> (# State# d, a #)
+  clearRegistrations# :: forall d. State# d -> State# d
   cloneArray# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). Array# a -> Int# -> Int# -> Array# a
   cloneMutableArray# :: forall {l :: GHC.Internal.Types.Levity} d (a :: TYPE (GHC.Internal.Types.BoxedRep l)). MutableArray# d a -> Int# -> Int# -> State# d -> (# State# d, MutableArray# d a #)
   cloneSmallArray# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). SmallArray# a -> Int# -> Int# -> SmallArray# a
@@ -2449,7 +2449,6 @@ module GHC.Prim where
   readSmallArray# :: forall {l :: GHC.Internal.Types.Levity} d (a :: TYPE (GHC.Internal.Types.BoxedRep l)). SmallMutableArray# d a -> Int# -> State# d -> (# State# d, a #)
   readStablePtrArray# :: forall d a. MutableByteArray# d -> Int# -> State# d -> (# State# d, StablePtr# a #)
   readStablePtrOffAddr# :: forall d a. Addr# -> Int# -> State# d -> (# State# d, StablePtr# a #)
-  readTVar# :: forall {l :: GHC.Internal.Types.Levity} d (a :: TYPE (GHC.Internal.Types.BoxedRep l)). TVar# d a -> State# d -> (# State# d, a #)
   readTVarIO# :: forall {l :: GHC.Internal.Types.Levity} d (a :: TYPE (GHC.Internal.Types.BoxedRep l)). TVar# d a -> State# d -> (# State# d, a #)
   readWideCharArray# :: forall d. MutableByteArray# d -> Int# -> State# d -> (# State# d, Char# #)
   readWideCharOffAddr# :: forall d. Addr# -> Int# -> State# d -> (# State# d, Char# #)
@@ -2541,6 +2540,7 @@ module GHC.Prim where
   readWordOffAddr# :: forall d. Addr# -> Int# -> State# d -> (# State# d, Word# #)
   realWorld# :: State# RealWorld
   reallyUnsafePtrEquality# :: forall {l :: GHC.Internal.Types.Levity} {k :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)) (b :: TYPE (GHC.Internal.Types.BoxedRep k)). a -> b -> Int#
+  registerWait# :: forall d a. TVar# d a -> a -> State# d -> State# d
   remAddr# :: Addr# -> Int# -> Int#
   remInt# :: Int# -> Int# -> Int#
   remInt16# :: Int16# -> Int16# -> Int16#
@@ -2577,7 +2577,6 @@ module GHC.Prim where
   remWord8X32# :: Word8X32# -> Word8X32# -> Word8X32#
   remWord8X64# :: Word8X64# -> Word8X64# -> Word8X64#
   resizeMutableByteArray# :: forall d. MutableByteArray# d -> Int# -> State# d -> (# State# d, MutableByteArray# d #)
-  retry# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). State# RealWorld -> (# State# RealWorld, a #)
   rightSection :: forall {q :: GHC.Internal.Types.RuntimeRep} {r :: GHC.Internal.Types.RuntimeRep} {s :: GHC.Internal.Types.RuntimeRep} (a :: TYPE q) (b :: TYPE r) (c :: TYPE s). (a -> b -> c) -> b -> a -> c
   seq :: forall {r :: GHC.Internal.Types.RuntimeRep} a (b :: TYPE r). a -> b -> b
   setAddrRange# :: Addr# -> Int# -> Int# -> State# RealWorld -> State# RealWorld
@@ -2636,6 +2635,7 @@ module GHC.Prim where
   sqrtFloatX4# :: FloatX4# -> FloatX4#
   sqrtFloatX8# :: FloatX8# -> FloatX8#
   stableNameToInt# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). StableName# a -> Int#
+  stmCommitLog# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> MutableByteArray# RealWorld -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   subInt16# :: Int16# -> Int16# -> Int16#
   subInt32# :: Int32# -> Int32# -> Int32#
   subInt64# :: Int64# -> Int64# -> Int64#
@@ -2882,7 +2882,6 @@ module GHC.Prim where
   writeSmallArray# :: forall {l :: GHC.Internal.Types.Levity} d (a :: TYPE (GHC.Internal.Types.BoxedRep l)). SmallMutableArray# d a -> Int# -> a -> State# d -> State# d
   writeStablePtrArray# :: forall d a. MutableByteArray# d -> Int# -> StablePtr# a -> State# d -> State# d
   writeStablePtrOffAddr# :: forall a d. Addr# -> Int# -> StablePtr# a -> State# d -> State# d
-  writeTVar# :: forall {l :: GHC.Internal.Types.Levity} d (a :: TYPE (GHC.Internal.Types.BoxedRep l)). TVar# d a -> a -> State# d -> State# d
   writeWideCharArray# :: forall d. MutableByteArray# d -> Int# -> Char# -> State# d -> State# d
   writeWideCharOffAddr# :: forall d. Addr# -> Int# -> Char# -> State# d -> State# d
   writeWord16Array# :: forall d. MutableByteArray# d -> Int# -> Word16# -> State# d -> State# d
@@ -3110,6 +3109,7 @@ module GHC.PrimopWrappers where
   bitReverse32# :: GHC.Internal.Prim.Word# -> GHC.Internal.Prim.Word#
   bitReverse64# :: GHC.Internal.Prim.Word64# -> GHC.Internal.Prim.Word64#
   bitReverse8# :: GHC.Internal.Prim.Word# -> GHC.Internal.Prim.Word#
+  blockOnRegistered# :: forall s. GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.Int# #)
   byteArrayContents# :: GHC.Internal.Prim.ByteArray# -> GHC.Internal.Prim.Addr#
   byteSwap# :: GHC.Internal.Prim.Word# -> GHC.Internal.Prim.Word#
   byteSwap16# :: GHC.Internal.Prim.Word# -> GHC.Internal.Prim.Word#
@@ -3128,10 +3128,9 @@ module GHC.PrimopWrappers where
   castWord32ToFloat# :: GHC.Internal.Prim.Word32# -> GHC.Internal.Prim.Float#
   castWord64ToDouble# :: GHC.Internal.Prim.Word64# -> GHC.Internal.Prim.Double#
   catch# :: forall a_reppoly b_levpoly. (GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_reppoly #)) -> (b_levpoly -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_reppoly #)) -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_reppoly #)
-  catchRetry# :: forall a_levpoly. (GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_levpoly #)) -> (GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_levpoly #)) -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_levpoly #)
-  catchSTM# :: forall a_levpoly b. (GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_levpoly #)) -> (b -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_levpoly #)) -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_levpoly #)
   chr# :: GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Char#
   clearCCS# :: forall s a. (GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, a #)) -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, a #)
+  clearRegistrations# :: forall s. GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   cloneArray# :: forall a_levpoly. GHC.Internal.Prim.Array# a_levpoly -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Array# a_levpoly
   cloneMutableArray# :: forall s a_levpoly. GHC.Internal.Prim.MutableArray# s a_levpoly -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.MutableArray# s a_levpoly #)
   cloneSmallArray# :: forall a_levpoly. GHC.Internal.Prim.SmallArray# a_levpoly -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.SmallArray# a_levpoly
@@ -3543,7 +3542,6 @@ module GHC.PrimopWrappers where
   readSmallArray# :: forall s a_levpoly. GHC.Internal.Prim.SmallMutableArray# s a_levpoly -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, a_levpoly #)
   readStablePtrArray# :: forall s a. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.StablePtr# a #)
   readStablePtrOffAddr# :: forall s a. GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.StablePtr# a #)
-  readTVar# :: forall s a_levpoly. GHC.Internal.Prim.TVar# s a_levpoly -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, a_levpoly #)
   readTVarIO# :: forall s a_levpoly. GHC.Internal.Prim.TVar# s a_levpoly -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, a_levpoly #)
   readWideCharArray# :: forall s. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.Char# #)
   readWideCharOffAddr# :: forall s. GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.Char# #)
@@ -3586,6 +3584,7 @@ module GHC.PrimopWrappers where
   readWordArray# :: forall s. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.Word# #)
   readWordOffAddr# :: forall s. GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.Word# #)
   reallyUnsafePtrEquality# :: forall a_levpoly b_levpoly. a_levpoly -> b_levpoly -> GHC.Internal.Prim.Int#
+  registerWait# :: forall s a. GHC.Internal.Prim.TVar# s a -> a -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   remAddr# :: GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int#
   remInt# :: GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int#
   remInt16# :: GHC.Internal.Prim.Int16# -> GHC.Internal.Prim.Int16# -> GHC.Internal.Prim.Int16#
@@ -3598,7 +3597,6 @@ module GHC.PrimopWrappers where
   remWord64# :: GHC.Internal.Prim.Word64# -> GHC.Internal.Prim.Word64# -> GHC.Internal.Prim.Word64#
   remWord8# :: GHC.Internal.Prim.Word8# -> GHC.Internal.Prim.Word8# -> GHC.Internal.Prim.Word8#
   resizeMutableByteArray# :: forall s. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.MutableByteArray# s #)
-  retry# :: forall a_levpoly. GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_levpoly #)
   setAddrRange# :: GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld
   setByteArray# :: forall s. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   setOtherThreadAllocationCounter# :: GHC.Internal.Prim.Int64# -> GHC.Internal.Prim.ThreadId# -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld
@@ -3619,6 +3617,7 @@ module GHC.PrimopWrappers where
   sqrtDouble# :: GHC.Internal.Prim.Double# -> GHC.Internal.Prim.Double#
   sqrtFloat# :: GHC.Internal.Prim.Float# -> GHC.Internal.Prim.Float#
   stableNameToInt# :: forall a_levpoly. GHC.Internal.Prim.StableName# a_levpoly -> GHC.Internal.Prim.Int#
+  stmCommitLog# :: forall a_levpoly. GHC.Internal.Prim.SmallMutableArray# GHC.Internal.Prim.RealWorld a_levpoly -> GHC.Internal.Prim.SmallMutableArray# GHC.Internal.Prim.RealWorld a_levpoly -> GHC.Internal.Prim.SmallMutableArray# GHC.Internal.Prim.RealWorld a_levpoly -> GHC.Internal.Prim.MutableByteArray# GHC.Internal.Prim.RealWorld -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, GHC.Internal.Prim.Int# #)
   subInt16# :: GHC.Internal.Prim.Int16# -> GHC.Internal.Prim.Int16# -> GHC.Internal.Prim.Int16#
   subInt32# :: GHC.Internal.Prim.Int32# -> GHC.Internal.Prim.Int32# -> GHC.Internal.Prim.Int32#
   subInt64# :: GHC.Internal.Prim.Int64# -> GHC.Internal.Prim.Int64# -> GHC.Internal.Prim.Int64#
@@ -3731,7 +3730,6 @@ module GHC.PrimopWrappers where
   writeSmallArray# :: forall s a_levpoly. GHC.Internal.Prim.SmallMutableArray# s a_levpoly -> GHC.Internal.Prim.Int# -> a_levpoly -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   writeStablePtrArray# :: forall s a. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.StablePtr# a -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   writeStablePtrOffAddr# :: forall a s. GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.StablePtr# a -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
-  writeTVar# :: forall s a_levpoly. GHC.Internal.Prim.TVar# s a_levpoly -> a_levpoly -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   writeWideCharArray# :: forall s. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Char# -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   writeWideCharOffAddr# :: forall s. GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Char# -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   writeWord16Array# :: forall s. GHC.Internal.Prim.MutableByteArray# s -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Word16# -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s

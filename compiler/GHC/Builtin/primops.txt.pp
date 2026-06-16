@@ -3147,46 +3147,53 @@ primop  AtomicallyOp "atomically#" GenPrimOp
    out_of_line = True
    effect = ReadWriteEffect
 
--- NB: retry#'s strictness information specifies it to diverge.
--- This lets the compiler perform some extra simplifications, since retry#
--- will technically never return.
---
--- This allows the simplifier to replace things like:
---   case retry# s1
---     (# s2, a #) -> e
--- with:
---   retry# s1
--- where 'e' would be unreachable anyway.  See #8091.
-primop  RetryOp "retry#" GenPrimOp
-   State# RealWorld -> (# State# RealWorld, a_levpoly #)
+primop  StmCommitLogOp "stmCommitLog#" GenPrimOp
+   SmallMutableArray# RealWorld a
+   -> SmallMutableArray# RealWorld a
+   -> SmallMutableArray# RealWorld a
+   -> Int#
+   -> State# RealWorld -> (# State# RealWorld, Int# #)
    with
-   strictness  = { \ _arity -> mkClosedDmdSig [topDmd] botDiv }
+   strictness  = { \ _arity -> mkClosedDmdSig [topDmd, topDmd, topDmd, topDmd, topDmd] topDiv }
    out_of_line = True
    effect = ReadWriteEffect
 
-primop  CatchRetryOp "catchRetry#" GenPrimOp
-      (State# RealWorld -> (# State# RealWorld, a_levpoly #) )
-   -> (State# RealWorld -> (# State# RealWorld, a_levpoly #) )
-   -> (State# RealWorld -> (# State# RealWorld, a_levpoly #) )
+primop RegisterWaitOp "registerWait#" GenPrimOp
+   TVar# s a
+   -> a
+   -> State# s -> State# s
+   { Register the current thread on this TVar's wait queue.
+     The parameter is the expected value - thread wakes if TVar differs. }
    with
-   strictness  = { \ _arity -> mkClosedDmdSig [ lazyApply1Dmd
-                                                 , lazyApply1Dmd
-                                                 , topDmd ] topDiv }
-                 -- See Note [Strictness for catch-style primops]
    out_of_line = True
    effect = ReadWriteEffect
 
-primop  CatchSTMOp "catchSTM#" GenPrimOp
-      (State# RealWorld -> (# State# RealWorld, a_levpoly #) )
-   -> (b -> State# RealWorld -> (# State# RealWorld, a_levpoly #) )
-   -> (State# RealWorld -> (# State# RealWorld, a_levpoly #) )
+primop RegisterLogRangeOp "registerLogRange#" GenPrimOp
+   SmallMutableArray# RealWorld a
+   -> SmallMutableArray# RealWorld a
+   -> Int#
+   -> Int#
+   -> State# RealWorld -> State# RealWorld
+   { Register the current thread on TVar wait queues for the given log range. }
    with
-   strictness  = { \ _arity -> mkClosedDmdSig [ lazyApply1Dmd
-                                                 , lazyApply2Dmd
-                                                 , topDmd ] topDiv }
-                 -- See Note [Strictness for catch-style primops]
    out_of_line = True
    effect = ReadWriteEffect
+
+primop BlockOnRegisteredOp "blockOnRegistered#" GenPrimOp
+   State# s -> (# State# s, Int# #)
+   { Block until any TVar the thread is registered on changes.
+     Returns 0# on successful wake. Clears registrations on wake. }
+   with
+   out_of_line = True
+   effect = ReadWriteEffect
+
+primop ClearRegistrationsOp "clearRegistrations#" GenPrimOp
+   State# s -> State# s
+   { Remove the current thread from all TVar wait queues. }
+   with
+   out_of_line = True
+   effect = ReadWriteEffect
+
 
 primop  NewTVarOp "newTVar#" GenPrimOp
        a_levpoly
@@ -3196,15 +3203,6 @@ primop  NewTVarOp "newTVar#" GenPrimOp
    out_of_line  = True
    effect = ReadWriteEffect
 
-primop  ReadTVarOp "readTVar#" GenPrimOp
-       TVar# s a_levpoly
-    -> State# s -> (# State# s, a_levpoly #)
-   {Read contents of 'TVar#' inside an STM transaction,
-    i.e. within a call to 'atomically#'.
-    Does not force evaluation of the result.}
-   with
-   out_of_line  = True
-   effect = ReadWriteEffect
 
 primop ReadTVarIOOp "readTVarIO#" GenPrimOp
        TVar# s a_levpoly
@@ -3215,14 +3213,6 @@ primop ReadTVarIOOp "readTVarIO#" GenPrimOp
    out_of_line      = True
    effect = ReadWriteEffect
 
-primop  WriteTVarOp "writeTVar#" GenPrimOp
-       TVar# s a_levpoly
-    -> a_levpoly
-    -> State# s -> State# s
-   {Write contents of 'TVar#'.}
-   with
-   out_of_line      = True
-   effect = ReadWriteEffect
 
 
 ------------------------------------------------------------------------

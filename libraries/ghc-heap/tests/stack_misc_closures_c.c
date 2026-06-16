@@ -28,25 +28,6 @@ void create_any_catch_frame(Capability *cap, StgStack *stack, StgWord w) {
   catchF->handler = payload;
 }
 
-void create_any_catch_stm_frame(Capability *cap, StgStack *stack, StgWord w) {
-  StgCatchSTMFrame *catchF = (StgCatchSTMFrame *)stack->sp;
-  SET_HDR(catchF, &stg_catch_stm_frame_info, CCS_SYSTEM);
-  StgClosure *payload1 = rts_mkWord(cap, w);
-  catchF->code = payload1;
-  StgClosure *payload2 = rts_mkWord(cap, w + 1);
-  catchF->handler = payload2;
-}
-
-void create_any_catch_retry_frame(Capability *cap, StgStack *stack, StgWord w) {
-  StgCatchRetryFrame *catchRF = (StgCatchRetryFrame *)stack->sp;
-  SET_HDR(catchRF, &stg_catch_retry_frame_info, CCS_SYSTEM);
-  catchRF->running_alt_code = w++;
-  StgClosure *payload1 = rts_mkWord(cap, w++);
-  catchRF->first_code = payload1;
-  StgClosure *payload2 = rts_mkWord(cap, w);
-  catchRF->alt_code = payload2;
-}
-
 void create_any_atomically_frame(Capability *cap, StgStack *stack, StgWord w) {
   StgAtomicallyFrame *aF = (StgAtomicallyFrame *)stack->sp;
   SET_HDR(aF, &stg_atomically_frame_info, CCS_SYSTEM);
@@ -276,14 +257,6 @@ StgStack *any_update_frame(Capability *cap) {
 
 StgStack *any_catch_frame(Capability *cap) {
   return setup(cap, sizeofW(StgCatchFrame), &create_any_catch_frame);
-}
-
-StgStack *any_catch_stm_frame(Capability *cap) {
-  return setup(cap, sizeofW(StgCatchSTMFrame), &create_any_catch_stm_frame);
-}
-
-StgStack *any_catch_retry_frame(Capability *cap) {
-  return setup(cap, sizeofW(StgCatchRetryFrame), &create_any_catch_retry_frame);
 }
 
 StgStack *any_atomically_frame(Capability *cap) {

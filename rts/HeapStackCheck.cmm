@@ -226,6 +226,30 @@ stg_gc_prim_pp (P_ arg1, P_ arg2, W_ fun)
     jump fun(arg1,arg2);
 }
 
+stg_gc_prim_ppp (P_ arg1, P_ arg2, P_ arg3, W_ fun)
+{
+    call stg_gc_noregs ();
+    jump fun(arg1,arg2,arg3);
+}
+
+stg_gc_prim_pppp (P_ arg1, P_ arg2, P_ arg3, P_ arg4, W_ fun)
+{
+    call stg_gc_noregs ();
+    jump fun(arg1,arg2,arg3,arg4);
+}
+
+stg_gc_prim_pppw (P_ arg1, P_ arg2, P_ arg3, W_ arg4, W_ fun)
+{
+    call stg_gc_noregs ();
+    jump fun(arg1,arg2,arg3,arg4);
+}
+
+stg_gc_prim_ppww (P_ arg1, P_ arg2, W_ arg3, W_ arg4, W_ fun)
+{
+    call stg_gc_noregs ();
+    jump fun(arg1,arg2,arg3,arg4);
+}
+
 stg_gc_prim_n (W_ arg, W_ fun)
 {
     call stg_gc_noregs ();
@@ -759,24 +783,16 @@ stg_block_async
    STM-specific waiting
    -------------------------------------------------------------------------- */
 
-stg_block_stmwait
+INFO_TABLE_RET ( stg_block_stmreg, RET_SMALL, W_ info_ptr )
+    return (W_ res)
 {
-    // When blocking on an MVar we have to be careful to only release
-    // the lock on the MVar at the very last moment (using
-    // BLOCK_BUT_FIRST()), since when we release the lock another
-    // Capability can wake up the thread, which modifies its stack and
-    // other state.  This is not a problem for STM, because STM
-    // wakeups are non-destructive; the waker simply calls
-    // tryWakeupThread() which sends a message to the owner
-    // Capability.  So the moment we release this lock we might start
-    // getting wakeup messages, but that's perfectly harmless.
-    //
-    // Furthermore, we *must* release these locks, just in case an
-    // exception is raised in this thread by
-    // maybePerformBlockedException() while exiting to the scheduler,
-    // which will abort the transaction, which needs to obtain a lock
-    // on all the TVars to remove the thread from the queues.
-    //
-    ccall stmWaitUnlock(MyCapability() "ptr", R3 "ptr");
+    ccall stmClearRegistrations(MyCapability() "ptr", CurrentTSO "ptr");
+    return (0);
+}
+
+stg_block_stmreg
+{
+    Sp_adj(-1);
+    Sp(0) = stg_block_stmreg_info;
     BLOCK_GENERIC;
 }

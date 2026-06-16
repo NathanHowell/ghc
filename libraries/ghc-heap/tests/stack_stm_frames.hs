@@ -21,17 +21,9 @@ main = do
 
   assertStackInvariants decodedStack
   assertThat
-    "Stack contains one catch stm frame"
-    (== 1)
-    (length $ filter isCatchStmFrame decodedStack)
-  assertThat
     "Stack contains one atomically frame"
     (== 1)
     (length $ filter isAtomicallyFrame decodedStack)
-
-isCatchStmFrame :: StackFrame -> Bool
-isCatchStmFrame (CatchStmFrame {..}) = tipe info_tbl == CATCH_STM_FRAME
-isCatchStmFrame _ = False
 
 isAtomicallyFrame :: StackFrame -> Bool
 isAtomicallyFrame (AtomicallyFrame {..}) = tipe info_tbl == ATOMICALLY_FRAME

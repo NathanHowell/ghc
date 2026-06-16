@@ -117,7 +117,6 @@ eval:
         MUT_PRIM,
         TSO,
         STACK,
-        TREC_CHUNK,
         WHITEHOLE,
         SMALL_MUT_ARR_PTRS_CLEAN,
         SMALL_MUT_ARR_PTRS_DIRTY,

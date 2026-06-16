@@ -507,12 +507,6 @@ traverseGetChildren(StgClosure *c, StgClosure **first_child, bool *other_childre
             return;     // no child
         break;
 
-    case TREC_CHUNK:
-        *first_child = (StgClosure *)((StgTRecChunk *)c)->prev_chunk;
-        se->info.type = posTypeStep;
-        se->info.next.step = 0;  // entry no.
-        break;
-
         // cannot appear
     case PAP:
     case AP:
@@ -713,36 +707,6 @@ traversePop(traverseState *ts, StgClosure **c, StgClosure **cp, stackData *data,
                 last = true;
             }
             goto out;
-
-        case TREC_CHUNK: {
-            // These are pretty complicated: we have N entries, each
-            // of which contains 3 fields that we want to follow.  So
-            // we divide the step counter: the 2 low bits indicate
-            // which field, and the rest of the bits indicate the
-            // entry number (starting from zero).
-            TRecEntry *entry;
-            StgWord step = se->info.next.step;
-            uint32_t entry_no = step >> 2;
-            uint32_t field_no = step & 3;
-
-            entry = &((StgTRecChunk *)se->c)->entries[entry_no];
-            if (field_no == 0) {
-                *c = (StgClosure *)entry->tvar;
-            } else if (field_no == 1) {
-                *c = entry->expected_value;
-            } else {
-                *c = entry->new_value;
-            }
-
-            se->info.next.step = ++step;
-
-            entry_no = step >> 2;
-            if (entry_no == ((StgTRecChunk *)se->c)->next_entry_idx) {
-                se->info.type = posTypeEmpty;
-                continue;
-            }
-            goto out;
-        }
 
         case TVAR:
         case CONSTR:
@@ -963,8 +927,6 @@ traversePushStack(traverseState *ts, StgClosure *cp, stackElement *sep,
         case UNDERFLOW_FRAME:
         case STOP_FRAME:
         case CATCH_FRAME:
-        case CATCH_STM_FRAME:
-        case CATCH_RETRY_FRAME:
         case ATOMICALLY_FRAME:
         case RET_SMALL:
         case ANN_FRAME:

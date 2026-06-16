@@ -1786,13 +1786,12 @@ emitPrimOp cfg primop =
   PromptOp -> alwaysExternal
   Control0Op -> alwaysExternal
   AtomicallyOp -> alwaysExternal
-  RetryOp -> alwaysExternal
-  CatchRetryOp -> alwaysExternal
-  CatchSTMOp -> alwaysExternal
+  StmCommitLogOp -> alwaysExternal
+  RegisterWaitOp -> alwaysExternal
+  BlockOnRegisteredOp -> alwaysExternal
+  ClearRegistrationsOp -> alwaysExternal
   NewTVarOp -> alwaysExternal
-  ReadTVarOp -> alwaysExternal
   ReadTVarIOOp -> alwaysExternal
-  WriteTVarOp -> alwaysExternal
   NewMVarOp -> alwaysExternal
   TakeMVarOp -> alwaysExternal
   TryTakeMVarOp -> alwaysExternal

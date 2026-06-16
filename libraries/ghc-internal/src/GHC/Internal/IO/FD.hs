@@ -50,7 +50,7 @@ import GHC.Internal.IO.Buffer
 import GHC.Internal.IO.BufferedIO
 import qualified GHC.Internal.IO.Device
 import GHC.Internal.IO.Device (SeekMode(..), IODeviceType(..))
-import GHC.Internal.Conc.IO
+import GHC.Internal.Event.Thread (threadWaitRead, threadWaitWrite, closeFdWith)
 import GHC.Internal.IO.Exception
 #if defined(mingw32_HOST_OS)
 import GHC.Internal.Base (liftM2, (>>))

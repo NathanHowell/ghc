@@ -334,32 +334,6 @@ printClosure( const StgClosure *obj )
             break;
         }
 
-    case CATCH_RETRY_FRAME:
-        {
-            StgCatchRetryFrame* frame = (StgCatchRetryFrame*)obj;
-            debugBelch("CATCH_RETRY_FRAME(");
-            printPtr((StgPtr)GET_INFO((StgClosure *)frame));
-            debugBelch(",");
-            printPtr((StgPtr)frame->first_code);
-            debugBelch(",");
-            printPtr((StgPtr)frame->alt_code);
-            debugBelch(")\n");
-            break;
-        }
-
-    case CATCH_STM_FRAME:
-        {
-            StgCatchSTMFrame* frame = (StgCatchSTMFrame*)obj;
-            debugBelch("CATCH_STM_FRAME(");
-            printPtr((StgPtr)GET_INFO((StgClosure *)frame));
-            debugBelch(",");
-            printPtr((StgPtr)frame->code);
-            debugBelch(",");
-            printPtr((StgPtr)frame->handler);
-            debugBelch(")\n");
-            break;
-        }
-
     case ARR_WORDS:
         {
             StgWord i;
@@ -491,9 +465,6 @@ printClosure( const StgClosure *obj )
                    (W_)((StgCompactNFData *)obj)->totalW * (W_)sizeof(W_));
         break;
 
-    case TREC_CHUNK:
-        debugBelch("TREC_CHUNK\n");
-        break;
 
     case CONTINUATION:
     {
@@ -606,8 +577,6 @@ printStackChunk( StgPtr sp, StgPtr spBottom )
         case UNDERFLOW_FRAME:
         case STOP_FRAME:
         case ATOMICALLY_FRAME:
-        case CATCH_RETRY_FRAME:
-        case CATCH_STM_FRAME:
             printClosure((StgClosure*)sp);
             continue;
 
@@ -1154,10 +1123,7 @@ const char *closure_type_names[] = {
  [MUT_PRIM]              = "MUT_PRIM",
  [TSO]                   = "TSO",
  [STACK]                 = "STACK",
- [TREC_CHUNK]            = "TREC_CHUNK",
  [ATOMICALLY_FRAME]      = "ATOMICALLY_FRAME",
- [CATCH_RETRY_FRAME]     = "CATCH_RETRY_FRAME",
- [CATCH_STM_FRAME]       = "CATCH_STM_FRAME",
  [WHITEHOLE]             = "WHITEHOLE",
  [SMALL_MUT_ARR_PTRS_CLEAN] = "SMALL_MUT_ARR_PTRS_CLEAN",
  [SMALL_MUT_ARR_PTRS_DIRTY] = "SMALL_MUT_ARR_PTRS_DIRTY",
@@ -1167,7 +1133,7 @@ const char *closure_type_names[] = {
  [CONTINUATION]          = "CONTINUATION",
 };
 
-#if N_CLOSURE_TYPES != 66
+#if N_CLOSURE_TYPES != 63
 #error Closure types changed: update Printer.c!
 #endif
 

@@ -12,18 +12,6 @@ any_catch_framezh() {
     return (stack);
 }
 
-any_catch_stm_framezh() {
-    P_ stack;
-    (stack) = ccall any_catch_stm_frame(MyCapability() "ptr");
-    return (stack);
-}
-
-any_catch_retry_framezh() {
-    P_ stack;
-    (stack) = ccall any_catch_retry_frame(MyCapability() "ptr");
-    return (stack);
-}
-
 any_atomically_framezh() {
     P_ stack;
     (stack) = ccall any_atomically_frame(MyCapability() "ptr");

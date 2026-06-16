@@ -209,7 +209,6 @@ EXTERN_INLINE void busy_wait_nop(void);
 
  *   - StgTVar: current_value, first_watch_queue_entry
  *   - StgTVarWatchQueue: {next,prev}_queue_entry
- *   - StgTRecChunk: TODO
  *
  * Finally, non-pointer fields can be safely mutated without barriers as
  * they do not refer to other memory locations. Technically, concurrent

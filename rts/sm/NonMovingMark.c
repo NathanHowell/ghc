@@ -1009,32 +1009,14 @@ markQueueLength (MarkQueue *q)
 
 /*
  * N.B. Mutation of TRecHeaders is completely unprotected by any write
- * barrier. Consequently it's quite important that we deeply mark
- * any outstanding transactions.
+ * barrier. Consequently it's quite important that we mark any
+ * outstanding transactions.
  */
-static void
-trace_trec_chunk (MarkQueue *queue, StgTRecChunk *chunk)
-{
-    markQueuePushClosure_(queue, (StgClosure *) chunk);
-    for (StgWord i=0; i < chunk->next_entry_idx; i++) {
-        TRecEntry *ent = &chunk->entries[i];
-        markQueuePushClosure_(queue, (StgClosure *) ent->tvar);
-        markQueuePushClosure_(queue, ent->expected_value);
-        markQueuePushClosure_(queue, ent->new_value);
-    }
-}
-
 static void
 trace_trec_header (MarkQueue *queue, StgTRecHeader *trec)
 {
-    while (trec != NO_TREC) {
-        StgTRecChunk *chunk = trec->current_chunk;
+    if (trec != NO_TREC) {
         markQueuePushClosure_(queue, (StgClosure *) trec);
-        while (chunk != END_STM_CHUNK_LIST) {
-            trace_trec_chunk(queue, chunk);
-            chunk = chunk->prev_chunk;
-        }
-        trec = trec->enclosing_trec;
     }
 }
 
@@ -1174,8 +1156,6 @@ trace_stack_ (MarkQueue *queue, StgPtr sp, StgPtr spBottom)
         }
 
             // small bitmap (< 32 entries, or 64 on a 64-bit machine)
-        case CATCH_STM_FRAME:
-        case CATCH_RETRY_FRAME:
         case ATOMICALLY_FRAME:
         case UNDERFLOW_FRAME:
         case STOP_FRAME:
@@ -1709,10 +1689,6 @@ mark_closure (MarkQueue *queue, const StgClosure *p0, StgClosure **origin)
         }
         break;
     }
-
-    case TREC_CHUNK:
-        // N.B. chunk contents are deeply marked by trace_trec_header
-        break;
 
     case WHITEHOLE:
         while ((StgInfoTable *) RELAXED_LOAD(&p->header.info) == &stg_WHITEHOLE_info);

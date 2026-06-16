@@ -54,10 +54,7 @@ RTS_RET(stg_marked_upd_frame);
 RTS_RET(stg_noupd_frame);
 RTS_RET(stg_orig_thunk_info_frame);
 RTS_RET(stg_catch_frame);
-RTS_RET(stg_catch_retry_frame);
 RTS_RET(stg_atomically_frame);
-RTS_RET(stg_atomically_waiting_frame);
-RTS_RET(stg_catch_stm_frame);
 RTS_RET(stg_unmaskAsyncExceptionszh_ret);
 RTS_RET(stg_maskUninterruptiblezh_ret);
 RTS_RET(stg_maskAsyncExceptionszh_ret);
@@ -169,10 +166,8 @@ RTS_ENTRY(stg_raise);
 RTS_ENTRY(stg_raise_ret);
 RTS_ENTRY(stg_atomically);
 RTS_ENTRY(stg_TVAR_WATCH_QUEUE);
-RTS_ENTRY(stg_TREC_CHUNK);
 RTS_ENTRY(stg_TREC_HEADER);
 RTS_ENTRY(stg_END_STM_WATCH_QUEUE);
-RTS_ENTRY(stg_END_STM_CHUNK_LIST);
 RTS_ENTRY(stg_NO_TREC);
 RTS_ENTRY(stg_COMPACT_NFDATA_CLEAN);
 RTS_ENTRY(stg_COMPACT_NFDATA_DIRTY);
@@ -210,7 +205,6 @@ RTS_CLOSURE(stg_TIMEOUT_QUEUE_EMPTY_closure);
 RTS_CLOSURE(stg_ASYNCIO_LIVE0_closure);
 
 RTS_CLOSURE(stg_END_STM_WATCH_QUEUE_closure);
-RTS_CLOSURE(stg_END_STM_CHUNK_LIST_closure);
 RTS_CLOSURE(stg_NO_TREC_closure);
 
 RTS_ENTRY(stg_NO_FINALIZER);
@@ -345,6 +339,10 @@ RTS_RET(stg_ret_t);
 RTS_FUN_DECL(stg_gc_prim);
 RTS_FUN_DECL(stg_gc_prim_p);
 RTS_FUN_DECL(stg_gc_prim_pp);
+RTS_FUN_DECL(stg_gc_prim_ppp);
+RTS_FUN_DECL(stg_gc_prim_pppp);
+RTS_FUN_DECL(stg_gc_prim_pppw);
+RTS_FUN_DECL(stg_gc_prim_ppww);
 RTS_FUN_DECL(stg_gc_prim_n);
 
 RTS_RET(stg_gc_prim_p_ll_ret);
@@ -387,7 +385,8 @@ RTS_RET(stg_block_putmvar);
 RTS_FUN_DECL(stg_block_async);
 RTS_RET(stg_block_async);
 #endif
-RTS_FUN_DECL(stg_block_stmwait);
+RTS_FUN_DECL(stg_block_stmreg);
+RTS_RET(stg_block_stmreg);
 RTS_FUN_DECL(stg_block_throwto);
 RTS_RET(stg_block_throwto);
 
@@ -530,14 +529,14 @@ RTS_FUN_DECL(stg_newBCOzh);
 RTS_FUN_DECL(stg_mkApUpd0zh);
 RTS_FUN_DECL(stg_newConAppObjzh);
 
-RTS_FUN_DECL(stg_retryzh);
-RTS_FUN_DECL(stg_catchRetryzh);
-RTS_FUN_DECL(stg_catchSTMzh);
 RTS_FUN_DECL(stg_atomicallyzh);
+RTS_FUN_DECL(stg_stmCommitLogzh);
+RTS_FUN_DECL(stg_registerWaitzh);
+RTS_FUN_DECL(stg_registerLogRangezh);
+RTS_FUN_DECL(stg_blockOnRegisteredzh);
+RTS_FUN_DECL(stg_clearRegistrationszh);
 RTS_FUN_DECL(stg_newTVarzh);
-RTS_FUN_DECL(stg_readTVarzh);
 RTS_FUN_DECL(stg_readTVarIOzh);
-RTS_FUN_DECL(stg_writeTVarzh);
 
 RTS_FUN_DECL(stg_unpackClosurezh);
 RTS_FUN_DECL(stg_closureSizzezh);

@@ -648,7 +648,6 @@ test('T23221',
      compile_and_run,
      ['-O -with-rtsopts -T'])
 
-test('T23142', [unless(debug_rts(), skip), req_interp], makefile_test, ['T23142'])
 
 test('T23400', [], compile_and_run, ['-with-rtsopts -A8k'])
 

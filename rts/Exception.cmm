@@ -481,37 +481,21 @@ retry_pop_stack:
     (frame_type) = ccall raiseExceptionHelper(BaseReg "ptr", CurrentTSO "ptr", exception "ptr");
     LOAD_THREAD_STATE();
     if (frame_type == ATOMICALLY_FRAME) {
-      /* The exception has reached the edge of a memory transaction.  Check that
-       * the transaction is valid.  If not then perhaps the exception should
-       * not have been thrown: re-run the transaction.  "trec" will either be
-       * a top-level transaction running the atomic block, or a nested
-       * transaction running an invariant check.  In the latter case we
-       * abort and de-allocate the top-level transaction that encloses it
-       * as well (we could just abandon its transaction record, but this makes
-       * sure it's marked as aborted and available for re-use). */
-      W_ trec, outer;
-      W_ r;
+      /* The exception has reached the edge of a memory transaction. Check that
+       * the transaction is valid; if not then perhaps the exception should
+       * not have been thrown and we should re-run the transaction. */
+      W_ trec;
       trec = StgTSO_trec(CurrentTSO);
-      (r) = ccall stmValidateNestOfTransactions(MyCapability() "ptr", trec "ptr", 0);
-      outer  = StgTRecHeader_enclosing_trec(trec);
       ccall stmAbortTransaction(MyCapability() "ptr", trec "ptr");
-      ccall stmFreeAbortedTRec(MyCapability() "ptr", trec "ptr");
+      ccall stmFreeTransaction(MyCapability() "ptr", trec "ptr");
 
       // No need to push `trec` to update remembered set; it will be no longer
       // reachable after we overwrite StgTSO.trec.
       StgTSO_trec(CurrentTSO) = NO_TREC;
-      if (r != 0) {
-        // Transaction was valid: continue searching for a catch frame
-        Sp = Sp + SIZEOF_StgAtomicallyFrame;
-        goto retry_pop_stack;
-      } else {
-        // Transaction was not valid: we retry the exception (otherwise continue
-        // with a further call to raiseExceptionHelper)
-        ("ptr" trec) = ccall stmStartTransaction(MyCapability() "ptr", NO_TREC "ptr");
-        StgTSO_trec(CurrentTSO) = trec;
-        R1 = StgAtomicallyFrame_code(Sp);
-        jump stg_ap_v_fast [R1];
-      }
+
+      // Continue searching for a catch frame.
+      Sp = Sp + SIZEOF_StgAtomicallyFrame;
+      goto retry_pop_stack;
     }
 
     // After stripping the stack, see whether we should break here for
@@ -566,15 +550,12 @@ retry_pop_stack:
         jump stg_threadFinished [];
     }
 
-    /* Ok, Sp points to the enclosing CATCH_FRAME or CATCH_STM_FRAME.
+    /* Ok, Sp points to the enclosing CATCH_FRAME.
      * Pop everything down to and including this frame, update Su,
      * push R1, and enter the handler.
      */
-    if (frame_type == CATCH_FRAME) {
-      handler = StgCatchFrame_handler(Sp);
-    } else {
-      handler = StgCatchSTMFrame_handler(Sp);
-    }
+    ASSERT(frame_type == CATCH_FRAME);
+    handler = StgCatchFrame_handler(Sp);
 
     /* Restore the masked/unmasked state for asynchronous exceptions
      * at the CATCH_FRAME.
@@ -613,18 +594,6 @@ retry_pop_stack:
       if ((flags & (TSO_BLOCKEX | TSO_INTERRUPTIBLE)) != TSO_BLOCKEX) {
         StgTSO_flags(CurrentTSO) = %lobits32(flags | TSO_BLOCKEX | TSO_INTERRUPTIBLE);
       }
-    }
-    else /* CATCH_STM_FRAME */
-    {
-      W_ trec, outer;
-      trec = StgTSO_trec(CurrentTSO);
-      outer  = StgTRecHeader_enclosing_trec(trec);
-      ccall stmAbortTransaction(MyCapability() "ptr", trec "ptr");
-      ccall stmFreeAbortedTRec(MyCapability() "ptr", trec "ptr");
-      // No need to push `trec` to update remembered set since we just freed
-      // it; it is no longer reachable.
-      StgTSO_trec(CurrentTSO) = outer;
-      Sp = Sp + SIZEOF_StgCatchSTMFrame;
     }
 
     /* Call the handler, passing the exception value and a realworld

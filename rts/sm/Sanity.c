@@ -121,8 +121,6 @@ checkStackFrame( StgPtr c )
       ASSERT(LOOKS_LIKE_CLOSURE_PTR(((StgUpdateFrame*)c)->updatee));
       FALLTHROUGH;
     case ATOMICALLY_FRAME:
-    case CATCH_RETRY_FRAME:
-    case CATCH_STM_FRAME:
     case CATCH_FRAME:
       // small bitmap cases (<= 32 entries)
     case UNDERFLOW_FRAME:
@@ -491,8 +489,6 @@ checkClosure( const StgClosure* p )
     case STOP_FRAME:
     case CATCH_FRAME:
     case ATOMICALLY_FRAME:
-    case CATCH_RETRY_FRAME:
-    case CATCH_STM_FRAME:
             barf("checkClosure: stack frame");
 
     case AP:
@@ -552,19 +548,6 @@ checkClosure( const StgClosure* p )
     case STACK:
         checkSTACK((StgStack*)p);
         return stack_sizeW((StgStack*)p);
-
-    case TREC_CHUNK:
-      {
-        uint32_t i;
-        StgTRecChunk *tc = (StgTRecChunk *)p;
-        ASSERT(LOOKS_LIKE_CLOSURE_PTR(tc->prev_chunk));
-        for (i = 0; i < tc -> next_entry_idx; i ++) {
-          ASSERT(LOOKS_LIKE_CLOSURE_PTR(tc->entries[i].tvar));
-          ASSERT(LOOKS_LIKE_CLOSURE_PTR(tc->entries[i].expected_value));
-          ASSERT(LOOKS_LIKE_CLOSURE_PTR(tc->entries[i].new_value));
-        }
-        return sizeofW(StgTRecChunk);
-      }
 
     case CONTINUATION:
     {

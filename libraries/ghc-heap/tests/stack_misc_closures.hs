@@ -33,10 +33,6 @@ foreign import prim "any_update_framezh" any_update_frame# :: SetupFunction
 
 foreign import prim "any_catch_framezh" any_catch_frame# :: SetupFunction
 
-foreign import prim "any_catch_stm_framezh" any_catch_stm_frame# :: SetupFunction
-
-foreign import prim "any_catch_retry_framezh" any_catch_retry_frame# :: SetupFunction
-
 foreign import prim "any_atomically_framezh" any_atomically_frame# :: SetupFunction
 
 foreign import prim "any_ret_small_prim_framezh" any_ret_small_prim_frame# :: SetupFunction
@@ -118,27 +114,6 @@ main = do
   traceM "Test 4"
   testSize any_catch_frame# 2
   traceM "Test 5"
-  test any_catch_stm_frame# $
-    \case
-      CatchStmFrame {..} -> do
-        assertEqual (tipe info_tbl) CATCH_STM_FRAME
-        assertConstrClosure 1 catchFrameCode
-        assertConstrClosure 2 handler
-      e -> error $ "Wrong closure type: " ++ show e
-  traceM "Test 6"
-  testSize any_catch_stm_frame# 3
-  traceM "Test 7"
-  test any_catch_retry_frame# $
-    \case
-      CatchRetryFrame {..} -> do
-        assertEqual (tipe info_tbl) CATCH_RETRY_FRAME
-        assertEqual running_alt_code 1
-        assertConstrClosure 2 first_code
-        assertConstrClosure 3 alt_code
-      e -> error $ "Wrong closure type: " ++ show e
-  traceM "Test 8"
-  testSize any_catch_retry_frame# 4
-  traceM "Test 9"
   test any_atomically_frame# $
     \case
       AtomicallyFrame {..} -> do

@@ -1,10 +1,15 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE UnliftedFFITypes #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE GHCForeignImportPrim #-}
 {-# LANGUAGE Unsafe #-}
+
+{-# OPTIONS_GHC #-}
 
 {-# OPTIONS_HADDOCK not-home #-}
 
@@ -76,6 +81,22 @@ module GHC.Internal.Conc.Sync
         , enableAllocationLimit
         , disableAllocationLimit
 
+        -- * TVars
+        , STM
+        , mfixSTM
+        , atomically
+        , retry
+        , orElse
+        , throwSTM
+        , catchSTM
+        , TVar(..)
+        , newTVar
+        , newTVarIO
+        , readTVar
+        , readTVarIO
+        , writeTVar
+        , unsafeIOToSTM
+
         -- * Miscellaneous
         , withMVar
         , modifyMVar_
@@ -87,6 +108,8 @@ module GHC.Internal.Conc.Sync
 
         , sharedCAF
         ) where
+
+#include "MachDeps.h"
 
 import GHC.Internal.Foreign.C.Types
 import GHC.Internal.Foreign.C.String
@@ -117,6 +140,7 @@ import GHC.Internal.Prim (
   )
 import GHC.Internal.Prim.Ext ( getThreadAllocationCounter# )
 import GHC.Internal.Ptr
+import GHC.Internal.Conc.STM
 import GHC.Internal.Real         ( fromIntegral )
 import GHC.Internal.Show         ( Show(..), showParen, showString )
 import GHC.Internal.Types ( Bool, Ordering(..), UnliftedRep, isTrue# )

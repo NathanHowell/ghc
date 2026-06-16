@@ -46,9 +46,6 @@ void wakeUpRts(void);
 /* raiseExceptionHelper */
 StgWord raiseExceptionHelper (StgRegTable *reg, StgTSO *tso, StgClosure *exception);
 
-/* findRetryFrameHelper */
-StgWord findRetryFrameHelper (Capability *cap, StgTSO *tso);
-
 /* findAtomicallyFrameHelper */
 StgWord findAtomicallyFrameHelper (Capability *cap, StgTSO *tso);
 

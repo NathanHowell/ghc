@@ -69,7 +69,6 @@ typedef struct {
     StgWord n_MUTARR;
     StgWord n_MVAR;
     StgWord n_TVAR;
-    StgWord n_TREC_CHUNK;
     StgWord n_TVAR_WATCH_QUEUE;
     StgWord n_TREC_HEADER;
     StgWord n_OTHERS;

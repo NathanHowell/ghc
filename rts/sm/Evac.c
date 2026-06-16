@@ -989,8 +989,6 @@ loop:
   case UNDERFLOW_FRAME:
   case STOP_FRAME:
   case CATCH_FRAME:
-  case CATCH_STM_FRAME:
-  case CATCH_RETRY_FRAME:
   case ATOMICALLY_FRAME:
   case ANN_FRAME:
     // shouldn't see these
@@ -1057,10 +1055,6 @@ loop:
           return;
       }
     }
-
-  case TREC_CHUNK:
-      copy(p,info,q,sizeofW(StgTRecChunk),gen_no);
-      return;
 
   case CONTINUATION:
       copy(p,info,q,continuation_sizeW((StgContinuation*)q),gen_no);

@@ -1296,11 +1296,6 @@ heapCensusBlock(Census *census, bdescr *bd)
             size = stack_sizeW((StgStack*)p);
             break;
 
-        case TREC_CHUNK:
-            prim = true;
-            size = sizeofW(StgTRecChunk);
-            break;
-
         case CONTINUATION:
             size = continuation_sizeW((StgContinuation *)p);
             break;
@@ -1391,7 +1386,6 @@ closureIsPrim (StgPtr p)
     case SMALL_MUT_ARR_PTRS_FROZEN_DIRTY:
     case TSO:
     case STACK:
-    case TREC_CHUNK:
         prim = true;
         break;
 

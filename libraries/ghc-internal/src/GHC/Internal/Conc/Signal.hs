@@ -103,4 +103,3 @@ sharedCAF a get_or_set =
       then return a
       else do freeStablePtr stable_ref
               deRefStablePtr (castPtrToStablePtr (castPtr ref2))
-

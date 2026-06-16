@@ -77,9 +77,6 @@ import CLOSURE stg_WHITEHOLE_info;
 import CLOSURE stg_ann_frame_info;
 import CLOSURE stg_ap_2_upd_info;
 import CLOSURE stg_atomically_frame_info;
-import CLOSURE stg_atomically_waiting_frame_info;
-import CLOSURE stg_catch_retry_frame_info;
-import CLOSURE stg_catch_stm_frame_info;
 import CLOSURE stg_keepAlive_frame_info;
 import CLOSURE stg_noDuplicate_info;
 import CLOSURE stg_ret_p_info;
@@ -1171,88 +1168,6 @@ stg_threadStatuszh ( gcptr tso )
  * TVar primitives
  * -------------------------------------------------------------------------- */
 
-stg_abort /* no arg list: explicit stack layout */
-{
-    W_ frame_type;
-    W_ frame;
-    W_ trec;
-    W_ outer;
-    W_ r;
-
-    // STM operations may allocate
-    MAYBE_GC_ (stg_abort); // NB. not MAYBE_GC(), we cannot make a
-                           // function call in an explicit-stack proc
-
-    // Find the enclosing ATOMICALLY_FRAME
-    SAVE_THREAD_STATE();
-    (frame_type) = ccall findAtomicallyFrameHelper(MyCapability(), CurrentTSO "ptr");
-    LOAD_THREAD_STATE();
-    frame = Sp;
-    trec = StgTSO_trec(CurrentTSO);
-    outer  = StgTRecHeader_enclosing_trec(trec);
-
-    // We've reached the ATOMICALLY_FRAME
-    ASSERT(frame_type == ATOMICALLY_FRAME);
-    ASSERT(outer == NO_TREC);
-
-    // Restart the transaction.
-    ("ptr" trec) = ccall stmStartTransaction(MyCapability() "ptr", outer "ptr");
-    StgTSO_trec(CurrentTSO) = trec;
-    Sp = frame;
-    R1 = StgAtomicallyFrame_code(frame);
-    jump stg_ap_v_fast [R1];
-}
-// Catch retry frame -----------------------------------------------------------
-
-#define CATCH_RETRY_FRAME_FIELDS(w_,p_,info_ptr,        \
-                                 p1, p2,                \
-                                 running_alt_code,      \
-                                 first_code,            \
-                                 alt_code)              \
-  w_ info_ptr,                                          \
-  PROF_HDR_FIELDS(w_,p1,p2)                             \
-  w_ running_alt_code,                                  \
-  p_ first_code,                                        \
-  p_ alt_code
-
-
-INFO_TABLE_RET(stg_catch_retry_frame, CATCH_RETRY_FRAME,
-               CATCH_RETRY_FRAME_FIELDS(W_,P_,
-                                        info_ptr, p1, p2,
-                                        running_alt_code,
-                                        first_code,
-                                        alt_code))
-    return (P_ ret)
-{
-    unwind Sp = Sp + SIZEOF_StgCatchRetryFrame;
-    W_ r;
-    gcptr trec, outer, arg;
-
-    trec = StgTSO_trec(CurrentTSO);
-    if (running_alt_code != 1) {
-      // When exiting the lhs code of catchRetry# lhs rhs, we need to cleanup
-      // the nested transaction.
-      // See Note [catchRetry# implementation]
-      outer  = StgTRecHeader_enclosing_trec(trec);
-      (r) = ccall stmCommitNestedTransaction(MyCapability() "ptr", trec "ptr");
-      if (r != 0) {
-          // Succeeded in first branch
-          StgTSO_trec(CurrentTSO) = outer;
-          return (ret);
-      } else {
-          // Did not commit: abort and restart.
-          StgTSO_trec(CurrentTSO) = outer;
-          jump stg_abort();
-      }
-    }
-    else {
-      // nothing to do in the rhs code of catchRetry# lhs rhs, it's already
-      // using the parent transaction (not a nested one).
-      // See Note [catchRetry# implementation]
-      return (ret);
-    }
-}
-
 // Atomically frame ------------------------------------------------------------
 
 // This must match StgAtomicallyFrame in Closures.h
@@ -1271,7 +1186,6 @@ INFO_TABLE_RET(stg_atomically_frame, ATOMICALLY_FRAME,
                                        frame_result))
     return (P_ result) // value returned to the frame
 {
-    W_ valid;
     gcptr trec;
 
     trec = StgTSO_trec(CurrentTSO);
@@ -1279,98 +1193,73 @@ INFO_TABLE_RET(stg_atomically_frame, ATOMICALLY_FRAME,
     /* Back at the atomically frame */
     frame_result = result;
 
-    /* try to commit */
-    (valid) = ccall stmCommitTransaction(MyCapability() "ptr", trec "ptr");
-    if (valid != 0) {
-        /* Transaction was valid: commit succeeded */
-        StgTSO_trec(CurrentTSO) = NO_TREC;
-        return (frame_result);
-    } else {
-        /* Transaction was not valid: try again */
-        ("ptr" trec) = ccall stmStartTransaction(MyCapability() "ptr",
-                                                 NO_TREC "ptr");
-        StgTSO_trec(CurrentTSO) = trec;
-
-        jump stg_ap_v_fast
-            // push the StgAtomicallyFrame again: the code generator is
-            // clever enough to only assign the fields that have changed.
-            (ATOMICALLY_FRAME_FIELDS(,,info_ptr,p1,p2,
-                                     code,frame_result))
-            (code);
-    }
+    StgTSO_trec(CurrentTSO) = NO_TREC;
+    ccall stmFreeTransaction(MyCapability() "ptr", trec "ptr");
+    return (frame_result);
 }
 
 
-INFO_TABLE_RET(stg_atomically_waiting_frame, ATOMICALLY_FRAME,
-               // layout of the frame, and bind the field names
-               ATOMICALLY_FRAME_FIELDS(W_,P_,
-                                       info_ptr, p1, p2,
-                                       code,
-                                       frame_result))
-    return (/* no return values */)
+stg_stmCommitLogzh (P_ tvars, P_ expected, P_ newvals, W_ len)
 {
-    W_ trec, valid;
+    W_ r;
 
-    /* The TSO is currently waiting: should we stop waiting? */
-    (valid) = ccall stmReWait(MyCapability() "ptr", CurrentTSO "ptr");
-    if (valid != 0) {
-        /* Previous attempt is still valid: no point trying again yet */
-        jump stg_block_noregs
-            (ATOMICALLY_FRAME_FIELDS(,,info_ptr, p1, p2,
-                                     code,frame_result))
-            ();
-    } else {
-        /* Previous attempt is no longer valid: try again */
-        ("ptr" trec) = ccall stmStartTransaction(MyCapability() "ptr", NO_TREC "ptr");
-        StgTSO_trec(CurrentTSO) = trec;
+    // stmCommitLog may allocate
+    MAYBE_GC_PPPW (stg_stmCommitLogzh, tvars, expected, newvals, len);
 
-        // change the frame header to stg_atomically_frame_info
-        jump stg_ap_v_fast
-            (ATOMICALLY_FRAME_FIELDS(,,stg_atomically_frame_info, p1, p2,
-                                     code,frame_result))
-            (code);
-    }
+    (r) = ccall stmCommitLog(MyCapability() "ptr",
+                             CurrentTSO "ptr",
+                             tvars "ptr",
+                             expected "ptr",
+                             newvals "ptr",
+                             len);
+    return (r);
 }
 
-// STM catch frame -------------------------------------------------------------
-
-/* Catch frames are very similar to update frames, but when entering
- * one we just pop the frame off the stack and perform the correct
- * kind of return to the activation record underneath us on the stack.
- */
-
-#define CATCH_STM_FRAME_FIELDS(w_,p_,info_ptr,p1,p2,code,handler) \
-    w_ info_ptr,                                                  \
-    PROF_HDR_FIELDS(w_,p1,p2)                                     \
-    p_ code,                                                      \
-    p_ handler
-
-INFO_TABLE_RET(stg_catch_stm_frame, CATCH_STM_FRAME,
-               // layout of the frame, and bind the field names
-               CATCH_STM_FRAME_FIELDS(W_,P_,info_ptr,p1,p2,code,handler))
-    return (P_ ret)
+stg_registerWaitzh (P_ tvar, P_ expected)
 {
-    W_ r, trec, outer;
+    // stmRegisterWait may allocate
+    MAYBE_GC_PP (stg_registerWaitzh, tvar, expected);
 
-    trec = StgTSO_trec(CurrentTSO);
-    outer  = StgTRecHeader_enclosing_trec(trec);
-    (r) = ccall stmCommitNestedTransaction(MyCapability() "ptr", trec "ptr");
-    if (r != 0) {
-        /* Commit succeeded */
-        StgTSO_trec(CurrentTSO) = outer;
-        return (ret);
+    ccall stmRegisterWait(MyCapability() "ptr",
+                          CurrentTSO "ptr",
+                          tvar "ptr",
+                          expected "ptr");
+    return ();
+}
+
+stg_registerLogRangezh (P_ tvars, P_ expected, W_ start, W_ end)
+{
+    // stmRegisterLogRange may allocate
+    MAYBE_GC_PPWW (stg_registerLogRangezh, tvars, expected, start, end);
+
+    ccall stmRegisterLogRange(MyCapability() "ptr",
+                              CurrentTSO "ptr",
+                              tvars "ptr",
+                              expected "ptr",
+                              start,
+                              end);
+    return ();
+}
+
+stg_blockOnRegisteredzh ()
+{
+    W_ should_block;
+
+    (should_block) = ccall stmBlockOnRegistered(MyCapability() "ptr",
+                                                CurrentTSO "ptr");
+    if (should_block != 0) {
+        jump stg_block_stmreg();
     } else {
-        /* Commit failed */
-        W_ new_trec;
-        ("ptr" new_trec) = ccall stmStartTransaction(MyCapability() "ptr", outer "ptr");
-        StgTSO_trec(CurrentTSO) = new_trec;
-
-        jump stg_ap_v_fast
-            (CATCH_STM_FRAME_FIELDS(,,info_ptr,p1,p2,code,handler))
-            (code);
+        ccall stmClearRegistrations(MyCapability() "ptr", CurrentTSO "ptr");
+        return (0);
     }
 }
 
+stg_clearRegistrationszh ()
+{
+    ccall stmClearRegistrations(MyCapability() "ptr", CurrentTSO "ptr");
+    return ();
+}
 
 // Primop definition -----------------------------------------------------------
 
@@ -1396,7 +1285,7 @@ stg_atomicallyzh (P_ stm)
     frame_result = NO_TREC;
 
     /* Start the memory transaction */
-    ("ptr" new_trec) = ccall stmStartTransaction(MyCapability() "ptr", old_trec "ptr");
+    ("ptr" new_trec) = ccall stmStartTransaction(MyCapability() "ptr", NO_TREC "ptr");
     StgTSO_trec(CurrentTSO) = new_trec;
 
     jump stg_ap_v_fast
@@ -1416,118 +1305,6 @@ INFO_TABLE(stg_atomically,1,0,THUNK_1_0,"atomically","atomically")
 }
 
 
-stg_catchSTMzh (P_ code    /* :: STM a */,
-                P_ handler /* :: Exception -> STM a */)
-{
-    STK_CHK_GEN();
-
-    /* Start a nested transaction to run the body of the try block in */
-    W_ cur_trec;
-    W_ new_trec;
-    cur_trec = StgTSO_trec(CurrentTSO);
-    ("ptr" new_trec) = ccall stmStartTransaction(MyCapability() "ptr",
-                                                 cur_trec "ptr");
-    StgTSO_trec(CurrentTSO) = new_trec;
-
-    jump stg_ap_v_fast
-        (CATCH_STM_FRAME_FIELDS(,,stg_catch_stm_frame_info, CCCS, 0,
-                                code, handler))
-        (code);
-}
-
-
-stg_catchRetryzh (P_ first_code, /* :: STM a */
-                  P_ alt_code    /* :: STM a */)
-{
-    W_ new_trec;
-
-    // stmStartTransaction may allocate
-    MAYBE_GC_PP (stg_catchRetryzh, first_code, alt_code);
-
-    STK_CHK_GEN();
-
-    /* Start a nested transaction within which to run the first code */
-    ("ptr" new_trec) = ccall stmStartTransaction(MyCapability() "ptr",
-                                                 StgTSO_trec(CurrentTSO) "ptr");
-    StgTSO_trec(CurrentTSO) = new_trec;
-
-    // push the CATCH_RETRY stack frame, and apply first_code to realWorld#
-    jump stg_ap_v_fast
-        (CATCH_RETRY_FRAME_FIELDS(,, stg_catch_retry_frame_info, CCCS, 0,
-                                  0, /* not running_alt_code */
-                                  first_code,
-                                  alt_code))
-        (first_code);
-}
-
-stg_retryzh /* no arg list: explicit stack layout */
-{
-    W_ frame_type;
-    W_ frame;
-    W_ trec;
-    W_ outer;
-    W_ r;
-
-    // STM operations may allocate
-    MAYBE_GC_ (stg_retryzh); // NB. not MAYBE_GC(), we cannot make a
-                             // function call in an explicit-stack proc
-
-    // Find the enclosing ATOMICALLY_FRAME or CATCH_RETRY_FRAME
-retry_pop_stack:
-    SAVE_THREAD_STATE();
-    (frame_type) = ccall findRetryFrameHelper(MyCapability(), CurrentTSO "ptr");
-    LOAD_THREAD_STATE();
-    frame = Sp;
-    trec = StgTSO_trec(CurrentTSO);
-    outer  = StgTRecHeader_enclosing_trec(trec);
-
-    if (frame_type == CATCH_RETRY_FRAME) {
-        // The retry reaches a CATCH_RETRY_FRAME before the ATOMICALLY_FRAME
-
-        if (!StgCatchRetryFrame_running_alt_code(frame) != 0) {
-            // Retrying in the lhs of catchRetry# lhs rhs, i.e. in a nested
-            // transaction. See Note [catchRetry# implementation]
-
-            // check that we have a parent transaction
-            ASSERT(outer != NO_TREC);
-
-            // Abort the nested transaction
-            ccall stmAbortTransaction(MyCapability() "ptr", trec "ptr");
-            ccall stmFreeAbortedTRec(MyCapability() "ptr", trec "ptr");
-
-            // As we are retrying in the lhs code, we must now try the rhs code
-            StgTSO_trec(CurrentTSO) = outer;
-            StgCatchRetryFrame_running_alt_code(frame) = 1 :: CInt; // true;
-            R1 = StgCatchRetryFrame_alt_code(frame);
-            jump stg_ap_v_fast [R1];
-        } else {
-            // Retry in the rhs code: propagate the retry
-            Sp = Sp + SIZEOF_StgCatchRetryFrame;
-            goto retry_pop_stack;
-        }
-    }
-
-    // We've reached the ATOMICALLY_FRAME: attempt to wait
-    ASSERT(frame_type == ATOMICALLY_FRAME);
-    ASSERT(outer == NO_TREC);
-
-    (r) = ccall stmWait(MyCapability() "ptr", CurrentTSO "ptr", trec "ptr");
-    if (r != 0) {
-        // Transaction was valid: stmWait put us on the TVars' queues, we now block
-        StgHeader_info(frame) = stg_atomically_waiting_frame_info;
-        Sp = frame;
-        R3 = trec; // passing to stmWaitUnblock()
-        jump stg_block_stmwait [R3];
-    } else {
-        // Transaction was not valid: retry immediately
-        ("ptr" trec) = ccall stmStartTransaction(MyCapability() "ptr", outer "ptr");
-        StgTSO_trec(CurrentTSO) = trec;
-        Sp = frame;
-        R1 = StgAtomicallyFrame_code(frame);
-        jump stg_ap_v_fast [R1];
-    }
-}
-
 stg_newTVarzh (P_ init)
 {
     W_ tv;
@@ -1545,20 +1322,6 @@ stg_newTVarzh (P_ init)
 }
 
 
-stg_readTVarzh (P_ tvar)
-{
-    P_ trec;
-    P_ result;
-
-    // Call to stmReadTVar may allocate
-    MAYBE_GC_P (stg_readTVarzh, tvar);
-
-    trec = StgTSO_trec(CurrentTSO);
-    ("ptr" result) = ccall stmReadTVar(MyCapability() "ptr", trec "ptr",
-                                       tvar "ptr");
-    return (result);
-}
-
 stg_readTVarIOzh ( P_ tvar /* :: TVar a */ )
 {
     W_ result, resultinfo;
@@ -1570,20 +1333,6 @@ again:
         goto again;
     }
     return (result);
-}
-
-stg_writeTVarzh (P_ tvar,     /* :: TVar a */
-                 P_ new_value /* :: a      */)
-{
-    W_ trec;
-
-    // Call to stmWriteTVar may allocate
-    MAYBE_GC_PP (stg_writeTVarzh, tvar, new_value);
-
-    trec = StgTSO_trec(CurrentTSO);
-    ccall stmWriteTVar(MyCapability() "ptr", trec "ptr", tvar "ptr",
-                       new_value "ptr");
-    return ();
 }
 
 

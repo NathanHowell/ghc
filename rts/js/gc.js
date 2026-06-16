@@ -496,19 +496,6 @@ function h$follow(obj, sp) {
 		    ADDW(c.excep[i][0]); // the posting thread
 		    ADDW(c.excep[i][1]); // the exception
 		}
-            } else if(c instanceof h$Transaction) {
-                // - the accessed TVar values don't need to be marked
-                // - parents are also on the stack, so they should've been marked already
-                TRACE_GC("marking STM transaction")
-                MARK_OBJ(c);
-                for(i=c.invariants.length-1;i>=0;i--) {
-		    ADDW(c.invariants[i].action);
-		}
-                ADDW(c.action);
-                iter = c.tvars.iter();
-                while((ii = iter.nextVal()) !== null) {
-		    ADDW(ii.val);
-		}
             } else if(c instanceof Array && c.__ghcjsArray) {
 		// only for Haskell arrays with lifted values
                 MARK_OBJ(c);
@@ -637,4 +624,3 @@ function h$finalizeCAFs() {
     }
     TRACE_GC("h$finalizeCAFs: " + (Date.now()-start) + "ms")
 }
-

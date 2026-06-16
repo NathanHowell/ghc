@@ -195,6 +195,7 @@ Library
         GHC.Internal.Conc.IO
         GHC.Internal.Conc.Signal
         GHC.Internal.Conc.Sync
+        GHC.Internal.Conc.STM
         GHC.Internal.ConsoleHandler
         GHC.Internal.Desugar
         GHC.Internal.Encoding.UTF8

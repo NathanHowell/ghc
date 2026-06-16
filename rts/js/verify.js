@@ -86,7 +86,6 @@ function h$verify_rep_is_rtsobj(o) {
  return (o instanceof h$MVar ||
          o instanceof h$MutVar ||
          o instanceof h$TVar ||
-         o instanceof h$Transaction ||
          o instanceof h$Thread ||
          o instanceof h$Weak ||
          o instanceof h$StableName ||

@@ -15,6 +15,7 @@
 #include "TopHandler.h"
 #include "HsFFI.h"
 #include "CloneStack.h"
+#include "STM.h"
 
 #include "sm/Storage.h"
 #include "sm/NonMovingMark.h"
@@ -49,7 +50,6 @@
  */
 extern char **environ;
 #endif
-
 
 /* -----------------------------------------------------------------------------
  * Symbols to be inserted into the RTS symbol table.
@@ -504,6 +504,10 @@ extern char **environ;
       SymI_HasDataProto(stg_primcall_info)                                  \
       SymI_HasDataProto(stg_gc_prim_p)                                      \
       SymI_HasDataProto(stg_gc_prim_pp)                                     \
+      SymI_HasDataProto(stg_gc_prim_ppp)                                    \
+      SymI_HasDataProto(stg_gc_prim_pppp)                                   \
+      SymI_HasDataProto(stg_gc_prim_pppw)                                   \
+      SymI_HasDataProto(stg_gc_prim_ppww)                                   \
       SymI_HasDataProto(stg_gc_prim_n)                                      \
       SymI_HasDataProto(stg_enter_info)                                     \
       SymI_HasDataProto(__stg_gc_enter_1)                                   \
@@ -554,8 +558,11 @@ extern char **environ;
       SymI_HasDataProto(stg_maskAsyncExceptionszh)                          \
       SymI_HasDataProto(stg_maskUninterruptiblezh)                          \
       SymI_HasDataProto(stg_catchzh)                                        \
-      SymI_HasDataProto(stg_catchRetryzh)                                   \
-      SymI_HasDataProto(stg_catchSTMzh)                                     \
+      SymI_HasDataProto(stg_stmCommitLogzh)                                 \
+      SymI_HasDataProto(stg_registerWaitzh)                                 \
+      SymI_HasDataProto(stg_registerLogRangezh)                             \
+      SymI_HasDataProto(stg_blockOnRegisteredzh)                            \
+      SymI_HasDataProto(stg_clearRegistrationszh)                           \
       SymI_HasDataProto(stg_clearCCSzh)                                     \
       SymI_HasDataProto(stg_annotateStackzh)                                \
       SymI_HasDataProto(stg_compactAddWithSharingzh)                        \
@@ -713,14 +720,12 @@ extern char **environ;
       SymI_HasDataProto(stg_keepAlivezh)                                    \
       SymI_HasDataProto(stg_paniczh)                                        \
       SymI_HasDataProto(stg_absentErrorzh)                                  \
-      SymI_HasDataProto(stg_readTVarzh)                                     \
       SymI_HasDataProto(stg_readTVarIOzh)                                   \
       SymI_HasProto(resumeThread)                                       \
       SymI_HasProto(setNumCapabilities)                                 \
       SymI_HasProto(performTryPutMVar)                                  \
       SymI_HasProto(getNumberOfProcessors)                              \
       SymI_HasProto(resolveObjs)                                        \
-      SymI_HasDataProto(stg_retryzh)                                        \
       SymI_HasProto(rts_apply)                                          \
       SymI_HasProto(rts_checkSchedStatus)                               \
       SymI_HasProto(rts_eval)                                           \
@@ -916,7 +921,6 @@ extern char **environ;
       SymI_HasDataProto(stg_unsafeThawArrayzh)                              \
       SymI_HasDataProto(stg_waitReadzh)                                     \
       SymI_HasDataProto(stg_waitWritezh)                                    \
-      SymI_HasDataProto(stg_writeTVarzh)                                    \
       SymI_HasDataProto(stg_yieldzh)                                        \
       SymI_NeedsProto(stg_badAlignment_entry)                           \
       SymI_NeedsProto(stg_interp_constr1_entry)                         \

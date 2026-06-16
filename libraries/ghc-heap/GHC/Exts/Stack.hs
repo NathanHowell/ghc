@@ -20,8 +20,6 @@ import Prelude
 stackFrameSize :: StackFrame -> Int
 stackFrameSize (UpdateFrame {}) = sizeStgUpdateFrame
 stackFrameSize (CatchFrame {}) = sizeStgCatchFrame
-stackFrameSize (CatchStmFrame {}) = sizeStgCatchSTMFrame
-stackFrameSize (CatchRetryFrame {}) = sizeStgCatchRetryFrame
 stackFrameSize (AtomicallyFrame {}) = sizeStgAtomicallyFrame
 stackFrameSize (RetSmall {..}) = sizeStgClosure + length stack_payload
 stackFrameSize (RetBig {..}) = sizeStgClosure + length stack_payload

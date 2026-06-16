@@ -74,7 +74,7 @@ module GHC.Conc
         , disableAllocationLimit
 
         -- * TVars
-        , STM(..)
+        , STM
         , atomically
         , retry
         , orElse

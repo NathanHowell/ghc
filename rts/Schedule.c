@@ -1087,31 +1087,6 @@ scheduleActivateSpark(Capability *cap)
 static void
 schedulePostRunThread (Capability *cap, StgTSO *t)
 {
-    // We have to be able to catch transactions that are in an
-    // infinite loop as a result of seeing an inconsistent view of
-    // memory, e.g.
-    //
-    //   atomically $ do
-    //       [a,b] <- mapM readTVar [ta,tb]
-    //       when (a == b) loop
-    //
-    // and a is never equal to b given a consistent view of memory.
-    //
-    if (t -> trec != NO_TREC && t -> why_blocked == NotBlocked) {
-        if (!stmValidateNestOfTransactions(cap, t -> trec, true)) {
-            debugTrace(DEBUG_sched | DEBUG_stm,
-                       "trec %p found wasting its time", t);
-
-            // strip the stack back to the
-            // ATOMICALLY_FRAME, aborting the (nested)
-            // transaction, and saving the stack of any
-            // partially-evaluated thunks on the heap.
-            throwToSingleThreaded_(cap, t, NULL, true);
-
-//            ASSERT(get_itbl((StgClosure *)t->sp)->type == ATOMICALLY_FRAME);
-        }
-    }
-
     // Handle the current thread's allocation limit running out,
 
     if (PK_Int64((W_*)&(t->alloc_limit)) < 0 && (t->flags & TSO_ALLOC_LIMIT)) {
@@ -3070,11 +3045,6 @@ raiseExceptionHelper (StgRegTable *reg, StgTSO *tso, StgClosure *exception)
             tso->stackobj->sp = p;
             return CATCH_FRAME;
 
-        case CATCH_STM_FRAME:
-            debugTrace(DEBUG_stm, "found CATCH_STM_FRAME at %p", p);
-            tso->stackobj->sp = p;
-            return CATCH_STM_FRAME;
-
         case UNDERFLOW_FRAME:
             tso->stackobj->sp = p;
             threadStackUnderflow(cap,tso);
@@ -3085,13 +3055,6 @@ raiseExceptionHelper (StgRegTable *reg, StgTSO *tso, StgClosure *exception)
             tso->stackobj->sp = p;
             return STOP_FRAME;
 
-        case CATCH_RETRY_FRAME: {
-            debugTrace(DEBUG_stm,
-                       "found CATCH_RETRY_FRAME at %p during raise", p);
-            stmAbortNestedCatchRetryTransaction(cap, tso, (StgCatchRetryFrame *)p);
-            p = next;
-            continue;
-        }
 
         default:
             // see Note [Update async masking state on unwind]
@@ -3147,79 +3110,10 @@ luxury, so we take two different strategies:
 
 
 /* -----------------------------------------------------------------------------
-   findRetryFrameHelper
-
-   This function is called by the retry# primitive.  It traverses the stack
-   leaving tso->sp referring to the frame which should handle the retry.
-
-   This should either be a CATCH_RETRY_FRAME (if the retry# is within an orElse#)
-   or should be a ATOMICALLY_FRAME (if the retry# reaches the top level).
-
-   We skip CATCH_STM_FRAMEs (aborting and rolling back the nested tx that they
-   create) because retries are not considered to be exceptions, despite the
-   similar implementation.
-
-   We should not expect to see CATCH_FRAME or STOP_FRAME because those should
-   not be created within memory transactions.
-   -------------------------------------------------------------------------- */
-
-StgWord
-findRetryFrameHelper (Capability *cap, StgTSO *tso)
-{
-  const StgRetInfoTable *info;
-  StgPtr    p, next;
-
-  p = tso->stackobj->sp;
-  while (1) {
-    info = get_ret_itbl((const StgClosure *)p);
-    next = p + stack_frame_sizeW((StgClosure *)p);
-    switch (info->i.type) {
-
-    case ATOMICALLY_FRAME:
-        debugTrace(DEBUG_stm,
-                   "found ATOMICALLY_FRAME at %p during retry", p);
-        tso->stackobj->sp = p;
-        return ATOMICALLY_FRAME;
-
-    case CATCH_RETRY_FRAME:
-        debugTrace(DEBUG_stm,
-                   "found CATCH_RETRY_FRAME at %p during retry", p);
-        tso->stackobj->sp = p;
-        return CATCH_RETRY_FRAME;
-
-    case CATCH_STM_FRAME: {
-        StgTRecHeader *trec = tso -> trec;
-        StgTRecHeader *outer = trec -> enclosing_trec;
-        debugTrace(DEBUG_stm,
-                   "found CATCH_STM_FRAME at %p during retry", p);
-        debugTrace(DEBUG_stm, "trec=%p outer=%p", trec, outer);
-        stmAbortTransaction(cap, trec);
-        stmFreeAbortedTRec(cap, trec);
-        tso -> trec = outer;
-        p = next;
-        continue;
-    }
-
-    case UNDERFLOW_FRAME:
-        tso->stackobj->sp = p;
-        threadStackUnderflow(cap,tso);
-        p = tso->stackobj->sp;
-        continue;
-
-    default:
-      ASSERT(info->i.type != CATCH_FRAME);
-      ASSERT(info->i.type != STOP_FRAME);
-      p = next;
-      continue;
-    }
-  }
-}
-
-/* -----------------------------------------------------------------------------
    findAtomicallyFrameHelper
 
-   This function is called by stg_abort via catch_retry_frame primitive.  It is
-   like findRetryFrameHelper but it will only stop at ATOMICALLY_FRAME.
+   This function is used by STM blocking primops (e.g., blockOnRegistered#) to
+   locate the enclosing ATOMICALLY_FRAME.
    -------------------------------------------------------------------------- */
 
 StgWord
@@ -3235,31 +3129,9 @@ findAtomicallyFrameHelper (Capability *cap, StgTSO *tso)
     switch (info->i.type) {
 
     case ATOMICALLY_FRAME:
-        debugTrace(DEBUG_stm,
-                   "found ATOMICALLY_FRAME at %p while aborting after orElse", p);
+        debugTrace(DEBUG_stm, "found ATOMICALLY_FRAME at %p", p);
         tso->stackobj->sp = p;
         return ATOMICALLY_FRAME;
-
-    case CATCH_RETRY_FRAME: {
-        debugTrace(DEBUG_stm,
-                   "found CATCH_RETRY_FRAME at %p while aborting after orElse", p);
-        stmAbortNestedCatchRetryTransaction(cap, tso, (StgCatchRetryFrame *)p);
-        p = next;
-        continue;
-    }
-
-    case CATCH_STM_FRAME: {
-        StgTRecHeader *trec = tso -> trec;
-        StgTRecHeader *outer = trec -> enclosing_trec;
-        debugTrace(DEBUG_stm,
-                   "found CATCH_STM_FRAME at %p while aborting after orElse", p);
-        debugTrace(DEBUG_stm, "trec=%p outer=%p", trec, outer);
-        stmAbortTransaction(cap, trec);
-        stmFreeAbortedTRec(cap, trec);
-        tso -> trec = outer;
-        p = next;
-        continue;
-    }
 
     case UNDERFLOW_FRAME:
         tso->stackobj->sp = p;

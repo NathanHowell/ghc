@@ -15,30 +15,6 @@ function h$logStm() { if(arguments.length == 1) {
 #endif
 
 
-var h$stmTransactionActive = 0;
-var h$stmTransactionWaiting = 4;
-/** @constructor */
-function h$Transaction(o, parent) {
-    TRACE_STM("h$Transaction: " + o + " -> " + parent)
-    this.action        = o;
-    // h$TVar -> h$WrittenTVar, transaction-local changed values
-    this.tvars         = new h$Map();
-    // h$TVar -> h$LocalTVar, all local tvars accessed anywhere in the transaction
-    this.accessed      = parent===null?new h$Map():parent.accessed;
-    this.parent        = parent;
-    this.state         = h$stmTransactionActive;
-    this.m             = 0;  // gc mark
-#ifdef GHCJS_DEBUG_ALLOC
-    h$debugAlloc_notifyAlloc(this);
-#endif
-}
-
-/** @constructor */
-function h$WrittenTVar(tv,v) {
-    this.tvar = tv;
-    this.val = v;
-}
-
 var h$TVarN = 0;
 /** @constructor */
 function h$TVar(v) {
@@ -53,20 +29,31 @@ function h$TVar(v) {
 }
 
 /** @constructor */
-function h$TVarsWaiting(s) {
-  this.tvars = s;  // h$Set of TVars we're waiting on
+function h$TVarsWaiting() {
+  this.tvars = new h$Map();  // TVar -> expected
 #ifdef GHCJS_DEBUG_ALLOC
   h$debugAlloc_notifyAlloc(this);
 #endif
 }
 
-// local view of a TVar
-/** @constructor */
-function h$LocalTVar(v) {
-  TRACE_STM("creating TVar view for: " + h$collectProps(v))
-  this.readVal = v.val;  // the value when read from environment
-  this.val     = v.val;  // the current uncommitted value
-  this.tvar    = v;
+function h$stmWaiting(thread) {
+  var waiting = thread.stmWaiting;
+  if(waiting === undefined || waiting === null) {
+    waiting = new h$TVarsWaiting();
+    thread.stmWaiting = waiting;
+  }
+  return waiting;
+}
+
+function h$stmClearRegistrationsThread(thread) {
+  var waiting = thread.stmWaiting;
+  if(waiting === undefined || waiting === null) return;
+  var tv, i = waiting.tvars.iter();
+  while((tv = i.next()) !== null) {
+    tv.blocked.remove(thread);
+  }
+  waiting.tvars = new h$Map();
+  thread.stmWaiting = null;
 }
 
 function h$atomically(o) {
@@ -76,64 +63,84 @@ function h$atomically(o) {
 
 function h$stmStartTransaction(o) {
   TRACE_STM("starting transaction: " + h$collectProps(o))
-  var t = new h$Transaction(o, null);
-  h$currentThread.transaction = t;
   h$r1 = o;
   return h$ap_1_0_fast();
 }
 
-// commit current transaction,
-// if it's top-level, commit the TVars, otherwise commit to parent
-function h$stmCommitTransaction() {
-    var t      = h$currentThread.transaction;
-    var tvs    = t.tvars;
-    var wtv, i = tvs.iter();
-    if(t.parent === null) { // top-level commit
-        TRACE_STM("committing top-level transaction")
-	// write new value to TVars and collect blocked threads
-        var thread, threadi, blockedThreads = new h$Set();
-        while((wtv = i.nextVal()) !== null) {
-	    h$stmCommitTVar(wtv.tvar, wtv.val, blockedThreads);
-	}
-	// wake up all blocked threads
-        threadi = blockedThreads.iter();
-        while((thread = threadi.next()) !== null) {
-	    h$stmRemoveBlockedThread(thread.blockedOn, thread);
-            h$wakeupThread(thread);
-	}
-    } else { // commit subtransaction
-        TRACE_STM("committing subtransaction")
-        var tpvs = t.parent.tvars;
-        while((wtv = i.nextVal()) !== null) tpvs.put(wtv.tvar, wtv);
+function h$stmCommitLog(tvars, expected, newvals, len) {
+  var blockedThreads = new h$Set();
+
+  for (var i = 0; i < len; i++) {
+    if (tvars[i].val !== expected[i]) {
+      return 1;
     }
-    h$currentThread.transaction = t.parent;
-}
+  }
 
-function h$stmValidateTransaction() {
-    var ltv, i = h$currentThread.transaction.accessed.iter();
-    while((ltv = i.nextVal()) !== null) {
-        if(ltv.readVal !== ltv.tvar.val) return false;
+  for (var j = 0; j < len; j++) {
+    h$stmCommitTVar(tvars[j], newvals[j], blockedThreads);
+  }
+
+  var thread, iter = blockedThreads.iter();
+  while ((thread = iter.next()) !== null) {
+    if(thread.status === THREAD_BLOCKED && thread.blockedOn instanceof h$TVarsWaiting) {
+      h$stmClearRegistrationsThread(thread);
+      thread.sp += 2;
+      thread.stack[thread.sp-1] = 0;
+      thread.stack[thread.sp]   = h$return;
+      h$wakeupThread(thread);
     }
-    return true;
+  }
+
+  return 0;
 }
 
-function h$stmAbortTransaction() {
-  h$currentThread.transaction = h$currentThread.transaction.parent;
+function h$registerLogRange(tvars, expected, start, end) {
+  for (var i = start; i < end; i++) {
+    h$registerWait(tvars[i], expected[i]);
+  }
 }
 
-function h$stmRetry() {
-  // unwind stack to h$atomically_e or h$stmCatchRetry_e frame
-  while(h$sp > 0) {
+function h$registerWait(tvar, expected) {
+  var waiting = h$stmWaiting(h$currentThread);
+  var regs = waiting.tvars;
+  var seen = regs.has(tvar);
+  regs.put(tvar, expected);
+  if(seen) return;
+  tvar.blocked.add(h$currentThread);
+}
+
+function h$blockOnRegistered() {
+  var waiting = h$stmWaiting(h$currentThread);
+  var regs = waiting.tvars;
+  var tv, i = regs.iter();
+  while((tv = i.next()) !== null) {
+    if(tv.val !== regs.get(tv)) {
+      h$stmClearRegistrationsThread(h$currentThread);
+      h$r1 = 0;
+      return h$rs();
+    }
+  }
+  h$currentThread.interruptible = true;
+  return h$blockThread(h$currentThread, waiting);
+}
+
+function h$clearRegistrations() {
+  h$stmClearRegistrationsThread(h$currentThread);
+}
+
+function h$stmWait(tvars, expected, queues, len) {
+  // unwind stack to h$atomically_e frame
+  while (h$sp > 0) {
     var f = h$stack[h$sp];
-    if(f === h$atomically_e || f === h$stmCatchRetry_e) {
+    if (f === h$atomically_e) {
       break;
     }
     var size;
-    if(f === h$ap_gen) {
+    if (f === h$ap_gen) {
       size = ((h$stack[h$sp-1] >> 8) + 2);
     } else {
       var tag = f.gtag;
-      if(tag < 0) { // dynamic size
+      if (tag < 0) { // dynamic size
         size = h$stack[h$sp-1];
       } else {
         size = (tag & 0xff) + 1;
@@ -141,116 +148,64 @@ function h$stmRetry() {
     }
     h$sp -= size;
   }
-  // either h$sp == 0 or at a handler
-  if(h$sp > 0) {
-    if(f === h$atomically_e) {
-      return h$stmSuspendRetry();
-    } else { // h$stmCatchRetry_e
-      var b = h$stack[h$sp-1];
-      h$stmAbortTransaction();
-      h$sp -= 2;
-      h$r1 = b;
-      return h$ap_1_0_fast();
-    }
-  } else {
-    throw "h$stmRetry: STM retry outside a transaction";
+
+  if (h$sp <= 0 || h$stack[h$sp] !== h$atomically_e) {
+    throw "h$stmWait: wait outside a transaction";
   }
-}
 
-function h$stmSuspendRetry() {
-    var tv, i = h$currentThread.transaction.accessed.iter();
-    var tvs = new h$Set();
-    while((tv = i.next()) !== null) {
-        TRACE_STM("h$stmSuspendRetry, accessed: " + h$collectProps(tv))
-        tv.blocked.add(h$currentThread);
-        tvs.add(tv);
+  for (var i = 0; i < len; i++) {
+    if (tvars[i].val !== expected[i]) {
+      return h$stmStartTransaction(h$stack[h$sp - 1]);
     }
-    var waiting = new h$TVarsWaiting(tvs);
-    h$currentThread.interruptible = true;
-    h$p2(waiting, h$stmResumeRetry_e);
-    return h$blockThread(h$currentThread, waiting);
-}
+  }
 
-function h$stmCatchRetry(a,b) {
-    h$currentThread.transaction = new h$Transaction(b, h$currentThread.transaction);
-    h$p2(b, h$stmCatchRetry_e);
-    h$r1 = a;
-    return h$ap_1_0_fast();
-}
+  h$stmClearRegistrationsThread(h$currentThread);
+  var waiting = h$stmWaiting(h$currentThread);
 
-function h$catchStm(a,handler) {
-    h$p4(h$currentThread.transaction, h$currentThread.mask, handler, h$catchStm_e);
-    h$currentThread.transaction = new h$Transaction(handler, h$currentThread.transaction);
-    h$r1 = a;
-    return h$ap_1_0_fast();
+  for (var j = 0; j < len; j++) {
+    h$registerWait(tvars[j], expected[j]);
+  }
+
+  h$currentThread.interruptible = true;
+  h$p2(waiting, h$stmResumeRetry_e);
+  return h$blockThread(h$currentThread, waiting);
 }
 
 function h$newTVar(v) {
   return new h$TVar(v);
 }
 
-function h$readTVar(tv) {
-  return h$readLocalTVar(h$currentThread.transaction,tv);
-}
-
 function h$readTVarIO(tv) {
   return tv.val;
-}
-
-function h$writeTVar(tv, v) {
-  h$setLocalTVar(h$currentThread.transaction, tv, v);
 }
 
 function h$sameTVar(tv1, tv2) {
   return tv1 === tv2;
 }
 
-// get the local value of the TVar in the transaction t
-// tvar is added to the read set
-function h$readLocalTVar(t, tv) {
-  var t0 = t;
-  while(t0 !== null) {
-    var v = t0.tvars.get(tv);
-    if(v !== null) {
-      TRACE_STM("h$readLocalTVar: found locally modified value: " + h$collectProps(v))
-      return v.val;
-    }
-    t0 = t0.parent;
-  }
-  var lv = t.accessed.get(tv);
-  if(lv !== null) {
-    TRACE_STM("h$readLocalTVar: found TVar value: " + h$collectProps(lv))
-    return lv.val;
-  } else {
-    TRACE_STM("h$readLocalTVar: TVar value not found, adding: " + h$collectProps(tv))
-    t.accessed.put(tv, new h$LocalTVar(tv));
-    return tv.val;
-  }
-}
-
-function h$setLocalTVar(t, tv, v) {
-    if(!t.accessed.has(tv)) t.accessed.put(tv, new h$LocalTVar(tv));
-    if(t.tvars.has(tv)) {
-        t.tvars.get(tv).val = v;
-    } else {
-        t.tvars.put(tv, new h$WrittenTVar(tv, v));
-    }
-}
-
 function h$stmCommitTVar(tv, v, threads) {
     TRACE_STM("committing tvar: " + tv._key + " " + (v === tv.val))
     if(v !== tv.val) {
         var thr, iter = tv.blocked.iter();
-        while((thr = iter.next()) !== null) threads.add(thr);
-        tv.blocked.clear();
+        while((thr = iter.next()) !== null) {
+            if(thr.status === THREAD_BLOCKED && thr.blockedOn instanceof h$TVarsWaiting) {
+                threads.add(thr);
+            }
+        }
         tv.val = v;
     }
 }
 
 // remove the thread from the queues of the TVars in s
 function h$stmRemoveBlockedThread(s, thread) {
+    if(s === null || s === undefined) return;
+    if(thread.stmWaiting === s) {
+      h$stmClearRegistrationsThread(thread);
+      return;
+    }
     var tv, i = s.tvars.iter();
     while((tv = i.next()) !== null) {
-        tv.blocked.remove(thread);
+      tv.blocked.remove(thread);
     }
+    s.tvars = new h$Map();
 }

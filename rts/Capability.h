@@ -178,9 +178,8 @@ struct Capability_ {
     // I/O manager data structures for this capability
     CapIOManager *iomgr;
 
-    // Per-capability STM-related data
+    // Per-capability STM-related data (GC-managed freelists)
     StgTVarWatchQueue *free_tvar_watch_queues;
-    StgTRecChunk *free_trec_chunks;
     StgTRecHeader *free_trec_headers;
     uint32_t transaction_tokens;
 } // typedef Capability is defined in RtsAPI.h

@@ -143,16 +143,6 @@ EventlogOutput_IPE:
 	./EventlogOutput +RTS -va -DI 2> EventlogOutput_IPE.stderr.log
 	grep "IPE:" EventlogOutput_IPE.stderr.log
 
-.PHONY: T23142
-T23142:
-	# Test that the -Di output contains different frames
-	"$(TEST_HC)" $(TEST_HC_OPTS) --run -ignore-dot-ghci T23142.hs +RTS -Di -RTS 2> T23142.log
-	grep -m1 -c "ATOMICALLY_FRAME" T23142.log
-	grep -m1 -c "CATCH_RETRY_FRAME" T23142.log
-	grep -m1 -c "CATCH_STM_FRAME" T23142.log
-	grep -m1 -c "MUT_ARR_PTRS_FROZEN_DIRTY" T23142.log
-	grep -m1 -c "SMALL_MUT_ARR_PTRS_FROZEN_DIRTY" T23142.log
-
 HSC2HS_OPTS = --cc="$(TEST_CC)" $(addprefix --cflag=,$(TEST_CC_OPTS)) --ld=$(TEST_CC) $(addprefix --lflag=,$(TEST_CC_OPTS))
 
 IOManager.hs: IOManager.hsc
