@@ -54,9 +54,9 @@
 -- /restore the entering writes, keep the monotone reads/ — two O(1) field
 -- updates, no diffing, no spine rebuild (see Note [Discard writes, keep reads]).
 -- It is also why registration happens exactly once at the top (no mid-flight
--- @clearRegistrations#@ churn, no @RetryWithWait@ outcome, no @differenceTxLog@):
--- the monotone read set already holds the union of every branch's reads, so
--- nothing registers until the whole transaction retries.
+-- register\/clear churn, no @RetryWithWait@ outcome, no @differenceTxLog@): the
+-- monotone read set already holds the union of every branch's reads, so nothing
+-- registers until the whole transaction retries.
 --
 -- Both lists insert by /consing to the front/ (O(1), no spine rebuild) and look
 -- up by /first match/; de-duplication is deferred to the single commit

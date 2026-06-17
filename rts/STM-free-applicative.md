@@ -3,8 +3,7 @@
 This document describes the representation, semantics, and optimisation
 opportunities of the plan-based STM as it ships on the `stm-improvements`
 branch. It supersedes earlier drafts that described a mutable structure-of-arrays
-log and `STMApp`/`STMAppTail` constructors that were never implemented. See
-FINDINGS.md §H-5, M-6 for the audit trail.
+log and `STMApp`/`STMAppTail` constructors that were never implemented.
 
 ## Goals
 
@@ -52,53 +51,59 @@ structure differs from the earlier draft's `STMApp`/`STMAppTail`/`ApSingle`/
 `ApHead`/`ApCons` encoding: the shipped form uses a right-spine of `SApp` nodes
 with the function accumulated on the left via `planMap (.)`.
 
-## The two-list log model
+## The log model: two lists, split by access kind
 
 **Do not implement the mutable structure-of-arrays log** described in earlier
-drafts of this document and in `STM-plan.md §3`. The SoA design was rejected
-because:
+drafts of this document. The SoA design was rejected because:
 
 - In-place mutation of traced pointer slots requires nonmoving deletion barriers
-  on every resize, sort, rollback, and free-list operation. The critical bugs
-  C-1, H-1, H-2, M-1 in FINDINGS.md all trace directly to this fragility.
+  on every resize, sort, rollback, and free-list operation.
 - Rollback (for `orElse` and `catchSTM`) becomes a heap-mutating operation
-  (`pushScope`/`rollbackScope`/shadow entries), which is both more complex and
-  more error-prone than the immutable-list alternative.
+  (`pushScope`/`rollbackScope`/shadow entries), more complex and error-prone than
+  the immutable-list alternative.
 - The `pushScope`/`rollbackScope`/shadow-entry/`cap`/`len`/`findIndex` machinery
   described in earlier drafts **does not exist** in the source tree.
 
-The shipped model uses **two immutable cons-front association lists**:
+The shipped model uses **two immutable cons-front association lists, split by
+access kind**:
 
-### `txLog` — reads and writes
+### `txReads` — the reads (monotone)
 
-- Type: `[TxEntry]` where `TxEntry :: TVar a -> a -> a -> TxEntry`
-  (tvar, expected, new).
-- `expected == new` (pointer equality) marks a read-only entry.
-- Inserted by consing to the front: O(1), no spine rebuild.
-- De-duplicated (first match wins) at the marshalling boundary — the single
-  walk that produces the primop arrays.
-- Rolled back by **both** `orElse` (discard a branch's reads and writes by
-  restoring the captured prior list) and `catchSTM` (same).
-- Used only on the `Ok` path: marshalled into `(tvars, expected, new)` arrays
-  for `stmCommitLog#`.
+- Type: `[ReadEntry]` where `ReadEntry :: TVar a -> a -> ReadEntry`
+  (tvar, expected): the value observed in live memory.
+- **Monotone**: never rolled back within an attempt. It plays all three read
+  roles at once — the wait set (registered on `retry`), the mid-flight
+  validation set (`validate#`), and the read-validation half of commit.
+- Grows only on a live-memory read: `readTVarTx` consults writes, then reads,
+  then memory, and only a memory miss conses a new entry — so re-reads and
+  read-your-own-writes add nothing and `txReads` stays free of duplicate TVars.
+- **Kept** by both `orElse` (when the left branch retries) and `catchSTM` (when
+  the body throws): the abandoned sub-computation's reads remain, so the
+  enclosing transaction stays validated and woken against the snapshot its
+  branch/throw decision was based on. This mirrors legacy `merge_read_into`.
 
-### `txWait` — the monotone wait set
+### `txWrites` — the writes (rolled back)
 
-- Type: `[WaitEntry]` where `WaitEntry :: TVar a -> a -> WaitEntry`
-  (tvar, expected). Reads-only; write-only TVars are never waited on.
-- **Monotone**: only ever grows. An `orElse` branch extends it even when that
-  branch is discarded (left branch retries → carry `txWait` forward into the
-  right branch; the union is implicit in the accumulated list). `catchSTM` rolls
-  it back with the body (a caught exception forgets the body's reads).
-- Registered exactly once, at the top-level `Retry` in `runAtomically`, via
-  `registerLogRange#`. There is no mid-flight registration and no
-  `clearRegistrations#` / `RetryWithWait` outcome.
-- Used only on the `Retry` path.
+- Type: `[WriteEntry]` where `WriteEntry :: TVar a -> a -> a -> WriteEntry`
+  (tvar, expected, new); `expected == new` marks a no-op write.
+- Inserted by consing to the front: O(1), no spine rebuild; last-write-wins at
+  the dedup boundary.
+- **Rolled back** by both `orElse` (discard a branch's writes) and `catchSTM`
+  (discard a caught body's writes), simply by restoring the captured entering
+  list.
 
-The split is why registration can happen at the top: the wait set already carries
-the union of every branch's reads, so `runAtomically` need only register it once.
-`RetryWithWait`, `differenceTxLog`, and `tvarInLog` are absent from the shipped
-code; the monotone `txWait` makes them unnecessary.
+Splitting by access kind is what makes `orElse` and `catchSTM` cheap and uniform:
+both reduce to *restore the entering writes, keep the monotone reads* — two O(1)
+field updates, no diffing (see `Note [Discard writes, keep reads]` in
+`GHC.Internal.Conc.STM`). It is also why registration happens exactly once at the
+top: the monotone read set already holds the union of every branch's reads, so
+`runAtomically` registers once and there is no mid-flight register/clear, no
+`RetryWithWait` outcome, and no `differenceTxLog`.
+
+At commit, `marshalCommit` walks the writes first (so a written TVar shadows any
+read of it) then the reads as no-op `expected == new` entries, into the single
+`(tvars, expected, new)` array that `stmCommitLog#` sorts, validates, and
+applies.
 
 ### Why not mutable arrays
 
@@ -121,7 +126,7 @@ There are exactly three outcomes. The earlier draft's four-outcome model (with
 `RetryWithWait` as a 4th constructor) is not implemented and is not correct:
 mid-flight registration produces the C-3 bug (sibling branches clobber each
 other's wait sets). The shipped model returns plain `Retry` from `orElse` branches
-and relies on the monotone `txWait` to carry the union.
+and relies on the monotone `txReads` to carry the union.
 
 ## Validation (`validate#`)
 
@@ -133,13 +138,13 @@ bodies). A transaction that has observed mutually-inconsistent TVars can otherwi
 
 The `validate#` primop performs a lock-free pass over a `(tvars, expected)` array,
 checking `expected == current_value` for each entry (pointer equality, no locking).
-The Haskell wrapper `validateLog` is called:
+The Haskell wrapper `validateTx` (over `txReads`) is called:
 
 1. **Before every `SBind` continuation**: if inconsistent, the continuation is
-   abandoned and `Retry` is returned. `runAtomically` re-validates the wait set
+   abandoned and `Retry` is returned. `runAtomically` re-validates the read set
    before blocking, so the transaction restarts immediately rather than blocking
    on a stale snapshot.
-2. **At the top-level `Retry` in `runAtomically`**, before `registerWaitSet`.
+2. **At the top-level `Retry` in `runAtomically`**, before `registerReads`.
 
 Commit-time validation in `stmCommitLog#` remains the backstop for correctness;
 the incremental checks narrow the window in which a zombie transaction can run.
@@ -154,8 +159,8 @@ the incremental checks narrow the window in which a zombie transaction can run.
 | `validate#` | `tvars`, `expected`, `len` | Lock-free pointer-equality check of `expected` against live TVar values. Returns 0 (consistent) or 1 (stale). |
 | `readMany#` | `tvars`, `results`, `expected`, `len` | Read all TVars in the array in one pass, filling `results` and `expected`. Each TVar gets an individually-stable read (no torn single read), but the batch is not a guaranteed atomic snapshot — a cross-batch tear is **not** detected. Always returns 0; cross-batch consistency is enforced downstream by `validate#`/commit. |
 
-`stmCommitLog#` takes **4** value arguments (no `flags` argument). The earlier
-draft's 5-argument form is incorrect (FINDINGS C-5).
+`stmCommitLog#` takes **4** value arguments (no `flags` argument); an earlier
+draft's 5-argument form was incorrect.
 
 ## Applicative fragments and static analysis
 
@@ -166,9 +171,11 @@ is the precondition for `readMany#` batching.
 `fragmentReads` walks the `SApp` spine to collect the read set.
 
 `tryReadMany` is called from `evalSTM` for any `SApp` plan: it fills a `tvars`
-array from `fragmentReads`, calls `readMany#`, and if successful folds the batch
-into `txLog`/`txWait`. A single-TVar fragment does not trigger `readMany#`
-(no benefit from the batch overhead); the threshold is two or more distinct reads.
+array from `fragmentReads`, calls `readMany#`, and folds the batch into `txReads`,
+then re-evaluates the fragment via `evalApp` (each `PRead` now a log hit). It
+bails to per-read evaluation when a fragment read is already logged, or for a
+single-TVar fragment (no benefit from the batch overhead); the threshold is two
+or more distinct reads.
 
 ## `mfix` / `SFix` — settled divergence semantics
 
@@ -191,7 +198,7 @@ This preserves the legacy semantic that "forcing the fixed point in a non-`Ok`
 body diverges", but via a catchable `FixIOException` rather than a true
 blackhole deadlock. The observable difference from a genuine black hole is
 limited to code that uses `catch`/`handle` inside `mfixSTM`. This is an accepted,
-documented deviation — see the Haddock on `evalFix`. (FINDINGS L-8)
+documented deviation — see the Haddock on `evalFix`.
 
 ## Handling dynamic information
 
@@ -208,18 +215,14 @@ no guarantee.
 
 - Marshalling to arrays at the primop boundary is unavoidable (Cmm cannot walk a
   Haskell list) but runs once per attempt over only the de-duplicated set.
-- `txLogLen` and `txWaitLen` are tracked incrementally as upper bounds (pre-dedup)
-  to avoid a separate `length` pass at the marshalling boundary.
+- `txReadsLen` and `txWritesLen` are tracked incrementally as upper bounds
+  (pre-dedup) to avoid a separate `length` pass at the marshalling boundary.
 - The single-TVar fast paths in `atomically` bypass the interpreter entirely for
   the most common trivial transactions (`PRead`, `PNewTVar`, single `PWrite`).
 
-## Next steps (open)
+## Possible future work
 
-1. Fix C-1 (watch-queue `NULL` terminator → `END`), H-1/H-2/M-1 (write barriers),
-   C-3 (confirmed absent in the shipped two-list + single-registration model —
-   verify under the `retryWithWait` removal path), C-4/C-5 (JS codegen).
-2. Regenerate `interface-stability` baselines after freezing the primop set.
-3. Add orElse wait-union, mfix, async-exception-mid-txn, and conflict-re-run
-   tests (FINDINGS H-7, H-8, M-9, M-10).
-4. Audit `stm`/`base` structures to maximise transactions in the applicative
-   fragment (FINDINGS M-4: `TArray.newArray`).
+- A *rebuildable* address index (dropped on rollback, never in-place shadow
+  entries) if the O(n²)-in-distinct-TVars lookup ever bites a real workload.
+- Audit `stm`/`base` structures to maximise transactions in the applicative
+  fragment (e.g. `TArray`) so more reads go through `readMany#`.

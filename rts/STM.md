@@ -2,9 +2,8 @@
 
 This document captures observations from reviewing the runtime STM implementation
 and the higher-level `Control.Concurrent.STM` library. It reflects the shipped
-state of the `stm-improvements` branch (as of review FINDINGS.md). See
-`rts/STM-free-applicative.md` for the full design rationale and
-`rts/STM-plan.md` for the open fix checklist.
+state of the `stm-improvements` branch. See `rts/STM-free-applicative.md` for the
+full design rationale.
 
 ## Runtime STM implementation
 
@@ -16,7 +15,7 @@ the objects may contain pointers. In a non-moving GC build, the freelists
 themselves live in `Capability`, so GC only sees them if we record the `next`
 pointers with the appropriate barrier. Without it the collector can reclaim
 descriptors that remain reachable through a freelist entry, leading to
-use-after-free when the freelist is later reused. (FINDINGS H-1, H-2, M-1)
+use-after-free when the freelist is later reused.
 
 ### `cond_lock_tvar` and the remembered set
 
@@ -32,8 +31,8 @@ actually starts pointing to the TRec. This fix is already applied on this branch
 
 The old `stmValidateNestOfTransactions` path no longer exists in the log-based
 RTS. Validation is handled by `stmCommitLog#` at commit time and, for incremental
-mid-flight validation, by the `validate#` primop (FINDINGS C-2). The Haskell
-interpreter calls `validateLog` (which invokes `validate#`) before
+mid-flight validation, by the `validate#` primop. The Haskell interpreter calls
+`validateTx` (which invokes `validate#` over `txReads`) before
 potentially-divergent `SBind` continuations and at the top-level `Retry` path in
 `runAtomically`. This is the mechanism that prevents "zombie transactions" — a
 transaction that has read a mutually-inconsistent snapshot cannot loop forever or
@@ -49,7 +48,7 @@ read-only TVars; prefer the commit-style version checks for readers.
 is evacuated by the generic scavenger without null guards. The per-thread wait
 list (`trec->wait_queue`) must therefore be terminated with
 `stg_END_STM_WATCH_QUEUE_closure`, never `NULL`. All `q != NULL` guards in the
-C source must compare against `END` instead. (FINDINGS C-1)
+C source must compare against `END` instead.
 
 ### `tryPeek` helpers
 
