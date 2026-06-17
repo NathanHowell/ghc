@@ -3214,14 +3214,6 @@ primop BlockOnRegisteredOp "blockOnRegistered#" GenPrimOp
    out_of_line = True
    effect = ReadWriteEffect
 
-primop ClearRegistrationsOp "clearRegistrations#" GenPrimOp
-   State# s -> State# s
-   { Remove the current thread from all TVar wait queues. }
-   with
-   out_of_line = True
-   effect = ReadWriteEffect
-
-
 primop  NewTVarOp "newTVar#" GenPrimOp
        a_levpoly
     -> State# s -> (# State# s, TVar# s a_levpoly #)

@@ -563,7 +563,6 @@ extern char **environ;
       SymI_HasDataProto(stg_readManyzh)                                     \
       SymI_HasDataProto(stg_registerLogRangezh)                             \
       SymI_HasDataProto(stg_blockOnRegisteredzh)                            \
-      SymI_HasDataProto(stg_clearRegistrationszh)                           \
       SymI_HasDataProto(stg_clearCCSzh)                                     \
       SymI_HasDataProto(stg_annotateStackzh)                                \
       SymI_HasDataProto(stg_compactAddWithSharingzh)                        \

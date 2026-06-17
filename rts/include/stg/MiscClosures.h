@@ -535,7 +535,6 @@ RTS_FUN_DECL(stg_validatezh);
 RTS_FUN_DECL(stg_readManyzh);
 RTS_FUN_DECL(stg_registerLogRangezh);
 RTS_FUN_DECL(stg_blockOnRegisteredzh);
-RTS_FUN_DECL(stg_clearRegistrationszh);
 RTS_FUN_DECL(stg_newTVarzh);
 RTS_FUN_DECL(stg_readTVarIOzh);
 

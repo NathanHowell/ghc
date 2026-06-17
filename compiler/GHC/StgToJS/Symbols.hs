@@ -736,9 +736,6 @@ hdRegisterLogRangeStr = fsLit "h$registerLogRange"
 hdBlockOnRegisteredStr :: FastString
 hdBlockOnRegisteredStr = fsLit "h$blockOnRegistered"
 
-hdClearRegistrationsStr :: FastString
-hdClearRegistrationsStr = fsLit "h$clearRegistrations"
-
 hdAtomicallyEntry :: JStgExpr
 hdAtomicallyEntry = global (identFS hdAtomicallyEntryStr)
 

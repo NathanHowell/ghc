@@ -3652,7 +3652,6 @@ module GHC.Base where
   catch# :: forall {q :: RuntimeRep} {k :: Levity} (a :: TYPE q) (b :: TYPE (BoxedRep k)). (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
   chr# :: Int# -> Char#
   clearCCS# :: forall d a. (State# d -> (# State# d, a #)) -> State# d -> (# State# d, a #)
-  clearRegistrations# :: forall d. State# d -> State# d
   cloneArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). Array# a -> Int# -> Int# -> Array# a
   cloneMutableArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). MutableArray# d a -> Int# -> Int# -> State# d -> (# State# d, MutableArray# d a #)
   cloneSmallArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). SmallArray# a -> Int# -> Int# -> SmallArray# a
@@ -5779,7 +5778,6 @@ module GHC.Exts where
   catch# :: forall {q :: RuntimeRep} {k :: Levity} (a :: TYPE q) (b :: TYPE (BoxedRep k)). (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
   chr# :: Int# -> Char#
   clearCCS# :: forall d a. (State# d -> (# State# d, a #)) -> State# d -> (# State# d, a #)
-  clearRegistrations# :: forall d. State# d -> State# d
   cloneArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). Array# a -> Int# -> Int# -> Array# a
   cloneMutableArray# :: forall {l :: Levity} d (a :: TYPE (BoxedRep l)). MutableArray# d a -> Int# -> Int# -> State# d -> (# State# d, MutableArray# d a #)
   cloneSmallArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)). SmallArray# a -> Int# -> Int# -> SmallArray# a

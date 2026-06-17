@@ -1559,7 +1559,6 @@ module GHC.Prim where
   catch# :: forall {q :: GHC.Internal.Types.RuntimeRep} {k :: GHC.Internal.Types.Levity} (a :: TYPE q) (b :: TYPE (GHC.Internal.Types.BoxedRep k)). (State# RealWorld -> (# State# RealWorld, a #)) -> (b -> State# RealWorld -> (# State# RealWorld, a #)) -> State# RealWorld -> (# State# RealWorld, a #)
   chr# :: Int# -> Char#
   clearCCS# :: forall d a. (State# d -> (# State# d, a #)) -> State# d -> (# State# d, a #)
-  clearRegistrations# :: forall d. State# d -> State# d
   cloneArray# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). Array# a -> Int# -> Int# -> Array# a
   cloneMutableArray# :: forall {l :: GHC.Internal.Types.Levity} d (a :: TYPE (GHC.Internal.Types.BoxedRep l)). MutableArray# d a -> Int# -> Int# -> State# d -> (# State# d, MutableArray# d a #)
   cloneSmallArray# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)). SmallArray# a -> Int# -> Int# -> SmallArray# a
@@ -3132,7 +3131,6 @@ module GHC.PrimopWrappers where
   catch# :: forall a_reppoly b_levpoly. (GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_reppoly #)) -> (b_levpoly -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_reppoly #)) -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, a_reppoly #)
   chr# :: GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Char#
   clearCCS# :: forall s a. (GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, a #)) -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, a #)
-  clearRegistrations# :: forall s. GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   cloneArray# :: forall a_levpoly. GHC.Internal.Prim.Array# a_levpoly -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Array# a_levpoly
   cloneMutableArray# :: forall s a_levpoly. GHC.Internal.Prim.MutableArray# s a_levpoly -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.MutableArray# s a_levpoly #)
   cloneSmallArray# :: forall a_levpoly. GHC.Internal.Prim.SmallArray# a_levpoly -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.SmallArray# a_levpoly

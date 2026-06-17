@@ -1268,12 +1268,6 @@ stg_blockOnRegisteredzh ()
     }
 }
 
-stg_clearRegistrationszh ()
-{
-    ccall stmClearRegistrations(MyCapability() "ptr", CurrentTSO "ptr");
-    return ();
-}
-
 // Primop definition -----------------------------------------------------------
 
 stg_atomicallyzh (P_ stm)

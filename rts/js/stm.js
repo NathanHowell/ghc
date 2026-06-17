@@ -147,10 +147,6 @@ function h$blockOnRegistered() {
   return h$blockThread(h$currentThread, waiting);
 }
 
-function h$clearRegistrations() {
-  h$stmClearRegistrationsThread(h$currentThread);
-}
-
 function h$newTVar(v) {
   return new h$TVar(v);
 }

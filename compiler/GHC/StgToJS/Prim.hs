@@ -932,8 +932,6 @@ genPrim prof bound ty op = case op of
     appS hdRegisterLogRangeStr [tvars, expected, start, end]
   BlockOnRegisteredOp -> \[_r] [] -> pure $ PRPrimCall $
     returnS (app hdBlockOnRegisteredStr [])
-  ClearRegistrationsOp -> \[] [] -> pure $ PrimInline $
-    appS hdClearRegistrationsStr []
   NewTVarOp    -> \[tv] [v]   -> pure $ PrimInline $ tv |= app hdNewTVar    [v]
   ReadTVarIOOp -> \[r] [tv]   -> pure $ PrimInline $ r  |= app hdReadTVarIO [tv]
 

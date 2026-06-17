@@ -1791,7 +1791,6 @@ emitPrimOp cfg primop =
   ReadManyOp -> alwaysExternal
   RegisterLogRangeOp -> alwaysExternal
   BlockOnRegisteredOp -> alwaysExternal
-  ClearRegistrationsOp -> alwaysExternal
   NewTVarOp -> alwaysExternal
   ReadTVarIOOp -> alwaysExternal
   NewMVarOp -> alwaysExternal
