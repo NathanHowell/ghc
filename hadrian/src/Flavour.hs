@@ -66,6 +66,7 @@ flavourTransformers = M.fromList
     , "with_profiled_libs" =: enableProfiledLibs
     , "no_profiled_libs" =: disableProfiledLibs
     , "omit_pragmas"     =: omitPragmas
+    , "o2_libs"          =: o2Libs
     , "ipe"              =: enableIPE
     , "fully_static"     =: fullyStatic
     , "host_fully_static" =: hostFullyStatic
@@ -376,6 +377,17 @@ omitPragmas :: Flavour -> Flavour
 omitPragmas = addArgs
     $ notStage0 ? builder (Ghc CompileHs) ? package compiler
     ? arg "-fomit-interface-pragmas"
+
+-- | Build the stage1+ libraries (everything except the @compiler@/ghc package)
+-- at -O2 instead of the base flavour's level.  Appended after the base opt flag,
+-- so the later -O2 wins; the compiler itself is left untouched (only library
+-- codegen affects e.g. STM benchmarks, and -O2 on the ghc library is very slow).
+-- Use as @--flavour=quick+o2_libs@.
+o2Libs :: Flavour -> Flavour
+o2Libs = addArgs
+    $ notStage0 ? builder (Ghc CompileHs)
+    ? libraryPackage ? notM (packageOneOf [compiler])
+    ? arg "-O2"
 
 -- | Build stage2 dependencies with options to enable IPE debugging
 -- information.
