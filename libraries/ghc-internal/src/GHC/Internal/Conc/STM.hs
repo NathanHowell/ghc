@@ -330,16 +330,6 @@ stmCommitLogArraysIO tvars expected new (I# len#) =
     case stmCommitLog# tvars expected new len# s0 of
       (# s1, result# #) -> (# s1, I# result# #)
 
-validateArraysIO
-  :: SmallMutableArray# RealWorld Any
-  -> SmallMutableArray# RealWorld Any
-  -> Int
-  -> IO Int
-validateArraysIO tvars expected (I# len#) =
-  stateToIO $ \s0 ->
-    case validate# tvars expected len# s0 of
-      (# s1, result# #) -> (# s1, I# result# #)
-
 readManyArraysIO
   :: SmallMutableArray# RealWorld Any
   -> SmallMutableArray# RealWorld Any
@@ -413,24 +403,6 @@ marshalReads reads lenHint = do
             go (i + 1) rest
   go 0 reads
 
--- | Marshal the read set into @(tvars, expected)@ arrays /without/
--- de-duplication, in a single O(n) pass.  Used only for validation, where a
--- duplicate TVar just costs a redundant (harmless) pointer compare: skipping the
--- O(n)-per-entry 'tvarSeen' dedup scan turns each validation from O(n²) into
--- O(n), which is what keeps a long orElse/bind chain (e.g. #26028's 50k-branch
--- @foldr1 orElse@) from going cubic overall.  @lenHint@ must be an upper bound on
--- the spine length.
-marshalReadsNoDedup :: ReadSet -> Int -> IO (MutArr, MutArr, Int)
-marshalReadsNoDedup reads lenHint = do
-  MutArr tvars <- newSmallArrayIO lenHint emptyAny
-  MutArr expected <- newSmallArrayIO lenHint emptyAny
-  let go i [] = return (MutArr tvars, MutArr expected, i)
-      go i (ReadEntry (TVar tv#) ex : rest) = do
-        writeSmallArrayIO tvars i (unsafeCoerce# tv#)
-        writeSmallArrayIO expected i (unsafeCoerce# ex)
-        go (i + 1) rest
-  go 0 reads
-
 -- Has this TVar pointer already been written into tvars[0..count)?  Uses the
 -- levity-polymorphic, hetero-typed 'reallyUnsafePtrEquality#' for direct boxed
 -- pointer identity (the stored 'Any' is a coerced 'TVar#'); no cross-rep
@@ -469,21 +441,38 @@ registerReads reads lenHint = do
   (MutArr tvars, MutArr expected, n) <- marshalReads reads lenHint
   registerLogRangeArraysIO tvars expected 0 n
 
--- | Lock-free validate the read set.  'True' if still consistent.  Uses the
--- non-deduping marshal: 'validate#' tolerates (and a repeated read is idempotent
--- for) duplicate TVars, so we avoid the quadratic dedup scan.
-validateReads :: ReadSet -> Int -> IO Bool
-validateReads [] _ = return True
-validateReads reads lenHint = do
-  (MutArr tvars, MutArr expected, n) <- marshalReadsNoDedup reads lenHint
-  result <- validateArraysIO tvars expected n
-  return (result == 0)
+-- | Validate the read set: 'True' if every logged read is still pointer-equal to
+-- its 'TVar''s current value.  Walks the read set directly with 'readTVarIO' +
+-- 'reallyUnsafePtrEquality#' — NO array marshalling, so it allocates nothing.
+-- The old path re-marshalled the whole (growing) read set into fresh arrays for
+-- 'validate#' on /every/ 'SBind' (C-2), which is O(n²) allocation over a large
+-- transaction; this is the single biggest allocation sink for long monadic txns.
+--
+-- Correctness vs the old lock-free 'validate#': 'readTVarIO#' spins past a commit
+-- lock ('TREC_HEADER') and returns the committed value, so we wait out any
+-- in-flight committer and then compare, needing no @num_updates@ recheck (that
+-- recheck only existed because 'validate#' raced committers instead of waiting).
+-- A write installs a fresh value pointer, so pointer-inequality ⇔ the read went
+-- stale — exactly the test 'validate#' performed.  Mid-flight this is the
+-- advisory zombie check; the lock-taking commit path remains authoritative.  The
+-- trade-off is that a contended validation spin-waits rather than restarting
+-- optimistically, which only matters for tiny heavily-contended transactions
+-- (1–2 reads), where validation is trivial either way.
+validateReads :: ReadSet -> IO Bool
+validateReads = go
+  where
+    go [] = return True
+    go (ReadEntry tv expected : rest) = do
+      cur <- readTVarIO tv
+      if isTrue# (reallyUnsafePtrEquality# cur expected)
+        then go rest
+        else return False
 
 -- | Validate the current transaction's read set before a potentially-divergent
 -- continuation (C-2), and before committing to a block in 'runAtomically'.
 -- 'True' if still consistent.
 validateTx :: TxState -> IO Bool
-validateTx st = validateReads (txReads st) (txReadsLen st)
+validateTx st = validateReads (txReads st)
 
 -----------------------------------------------------------------------------
 -- Logged TVar access.
