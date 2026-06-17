@@ -85,17 +85,6 @@
 
 #include <stdio.h>
 
-// ACQ_ASSERT is used for assertions which are only required for
-// THREADED_RTS builds with fine-grained locking.
-
-#if defined(STM_FG_LOCKS)
-#define ACQ_ASSERT(_X) ASSERT(_X)
-#define NACQ_ASSERT(_X) /*Nothing*/
-#else
-#define ACQ_ASSERT(_X) /*Nothing*/
-#define NACQ_ASSERT(_X) ASSERT(_X)
-#endif
-
 /*......................................................................*/
 
 #define TRACE(_x...) debugTrace(DEBUG_stm, "STM: " _x)
@@ -140,12 +129,7 @@ static int shake(void) {
 
 /*......................................................................*/
 
-#define IF_STM_UNIPROC(__X)  do { } while (0)
-#define IF_STM_FG_LOCKS(__X) do { } while (0)
-
 #if defined(STM_UNIPROC)
-#undef IF_STM_UNIPROC
-#define IF_STM_UNIPROC(__X)  do { __X } while (0)
 static const StgBool config_use_read_phase = false;
 
 static StgClosure *lock_tvar(Capability *cap STG_UNUSED,
@@ -184,8 +168,6 @@ static StgBool cond_lock_tvar(Capability *cap STG_UNUSED,
 
 #if defined(STM_FG_LOCKS) /*...................................*/
 
-#undef IF_STM_FG_LOCKS
-#define IF_STM_FG_LOCKS(__X) do { __X } while (0)
 static const StgBool config_use_read_phase = true;
 
 static StgClosure *lock_tvar(Capability *cap,
@@ -519,17 +501,15 @@ static StgBool validate_and_lock_log(Capability *cap,
         return false;
       }
     } else {
+      // Read-only entry: verify the value is still what we expect, no lock.
+      if (ACQUIRE_LOAD(&s->current_value) != expected_val) {
+        unlock_log_prefix(cap, trec, tvars, expected, newvals, i, acquire_all);
+        return false;
+      }
 #if defined(STM_FG_LOCKS)
-      if (ACQUIRE_LOAD(&s->current_value) != expected_val) {
-        unlock_log_prefix(cap, trec, tvars, expected, newvals, i, acquire_all);
-        return false;
-      }
+      // Snapshot num_updates between two value checks so a concurrent commit
+      // landing here is caught; check_read_only_log re-checks against it.
       num_updates[i] = SEQ_CST_LOAD(&s->num_updates);
-      if (ACQUIRE_LOAD(&s->current_value) != expected_val) {
-        unlock_log_prefix(cap, trec, tvars, expected, newvals, i, acquire_all);
-        return false;
-      }
-#else
       if (ACQUIRE_LOAD(&s->current_value) != expected_val) {
         unlock_log_prefix(cap, trec, tvars, expected, newvals, i, acquire_all);
         return false;
@@ -689,9 +669,12 @@ static volatile StgInt64 max_commits = 0;
 
 static volatile StgWord token_locked = false;
 
+#if WORD_SIZE_IN_BITS < 64
+// Only the 32-bit commit-overflow check (in stmCommitLog) reads max_commits.
 static StgInt64 getMaxCommits(void) {
   return RELAXED_LOAD(&max_commits);
 }
+#endif
 
 static void getTokenBatch(Capability *cap) {
   while (cas((void *)&token_locked, false, true) == true) { /* nothing */ }
@@ -708,9 +691,11 @@ static void getToken(Capability *cap) {
   cap -> transaction_tokens --;
 }
 #else
+#if WORD_SIZE_IN_BITS < 64
 static StgInt64 getMaxCommits(void) {
     return 0;
 }
+#endif
 
 static void getToken(Capability *cap STG_UNUSED) {
   // Nothing
