@@ -152,7 +152,7 @@ the incremental checks narrow the window in which a zombie transaction can run.
 | `registerLogRange#` | `tvars`, `expected`, `start`, `end` | Enqueue the current TSO on each TVar's wait queue for the given range. |
 | `blockOnRegistered#` | — | Validate registered TVars; block the TSO until any change; clear registrations on wake. |
 | `validate#` | `tvars`, `expected`, `len` | Lock-free pointer-equality check of `expected` against live TVar values. Returns 0 (consistent) or 1 (stale). |
-| `readMany#` | `tvars`, `results`, `expected`, `len` | Read all TVars in the array in one pass, filling `results` and `expected`. Returns 0 (ok) or 1 (concurrent commit observed). |
+| `readMany#` | `tvars`, `results`, `expected`, `len` | Read all TVars in the array in one pass, filling `results` and `expected`. Each TVar gets an individually-stable read (no torn single read), but the batch is not a guaranteed atomic snapshot — a cross-batch tear is **not** detected. Always returns 0; cross-batch consistency is enforced downstream by `validate#`/commit. |
 
 `stmCommitLog#` takes **4** value arguments (no `flags` argument). The earlier
 draft's 5-argument form is incorrect (FINDINGS C-5).

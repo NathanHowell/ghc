@@ -997,6 +997,11 @@ StgInt stmReadMany(Capability *cap,
   recordClosureMutated(cap, (StgClosure *)results);
   recordClosureMutated(cap, (StgClosure *)expected);
 
+  // Always 0: each TVar above is read with an individually-stable double-load,
+  // but we deliberately do not detect a cross-batch tear (a commit landing
+  // between two of the reads). That is caught downstream by validate# before the
+  // next continuation and by the commit-time check; an extra re-snapshot pass
+  // here would only narrow the zombie window, not change correctness.
   TRACE("%p : stmReadMany()=0", trec);
   return 0;
 }

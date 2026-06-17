@@ -553,12 +553,12 @@ fragmentReads = go []
 data SomeTV where
   SomeTV :: TVar a -> SomeTV
 
--- | Batch-read a fragment's read set with 'readMany#' and fold the snapshot
--- into 'txReads', then evaluate the fragment against the now-populated log (each
--- 'PRead' becomes a hit; writes proceed normally).  Returns 'Nothing'
--- and leaves the state untouched if the batch observed a concurrent commit
--- (caller restarts the fragment) — but only attempts the batch for fragments
--- with at least two distinct reads, where it pays off.
+-- | Batch-read a fragment's read set with 'readMany#', fold the snapshot into
+-- 'txReads', then evaluate the fragment against the now-populated log (each
+-- 'PRead' becomes a hit; writes proceed normally).  Returns 'Nothing' (caller
+-- falls back to per-read evaluation) when the plan is not a fragment, has fewer
+-- than two distinct reads (no batch payoff), or has a read already resolvable
+-- from the log; otherwise 'Just' the evaluated fragment.
 tryReadMany :: TxState -> STMPlan a -> IO (Maybe (STMOutcome a, TxState))
 tryReadMany st plan =
   case fragmentReads plan of
@@ -580,13 +580,15 @@ tryReadMany st plan =
                 writeSmallArrayIO tvars i (unsafeCoerce# tv#)
                 fill (i + 1) rest
           fill 0 reads
-          rc <- readManyArraysIO tvars results expected n
-          if rc /= 0
-            then return Nothing
-            else do
-              st' <- foldReads st 0 n tvars results
-              (out, st'') <- evalFragment st' plan
-              return (Just (out, st''))
+          -- 'readMany#' gives each TVar an individually-stable read but does not
+          -- detect a cross-batch tear (a commit landing between two of the
+          -- reads); it always reports 0.  Cross-batch inconsistency is caught
+          -- downstream by 'validateTx' before the next 'SBind' and by the commit
+          -- check, so we always fold the batch in.
+          _ <- readManyArraysIO tvars results expected n
+          st' <- foldReads st 0 n tvars results
+          (out, st'') <- evalApp st' plan
+          return (Just (out, st''))
     _ -> return Nothing
 
 -- | Is a read of this 'TVar' resolvable from the current transaction state
@@ -630,25 +632,6 @@ foldReads st i n tvars results
 anyToTVar :: Any -> TVar a
 anyToTVar a = TVar (unsafeCoerce# a)
 {-# INLINE anyToTVar #-}
-
--- Evaluate a pure applicative fragment whose reads are already in the log
--- (every PRead is a hit).  Mirrors the SApp/SPrim/SPure arms of evalSTM but
--- without re-attempting readMany# (avoiding nontermination).
-evalFragment :: TxState -> STMPlan a -> IO (STMOutcome a, TxState)
-evalFragment st plan = case plan of
-  SPure a -> return (Ok a, st)
-  SPrim p -> do
-    (a, st') <- evalPrim st p
-    return (Ok a, st')
-  SApp pf px -> do
-    (outcome, st') <- evalFragment st pf
-    case outcome of
-      Ok f -> do
-        (x, st'') <- evalPrim st' px
-        return (Ok (f x), st'')
-      Retry -> return (Retry, st')
-      Raise e -> return (Raise e, st')
-  _ -> evalSTM st plan  -- not actually a fragment; defensive fall-through
 
 -- Note [Discard writes, keep reads]
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -742,8 +725,12 @@ evalSTM st plan = case plan of
       (\e -> return (Raise e, st))
   SFix k -> evalFix st k
 
--- One-TVar-at-a-time evaluation of an applicative fragment (the readMany#
--- fall-back path).  Reads not already batched go through readTVarTx.
+-- One-TVar-at-a-time evaluation of an applicative fragment, via 'evalPrim'.
+-- Used both as the 'readMany#' fall-back (reads go through 'readTVarTx') and to
+-- re-evaluate a fragment after a successful batch (every 'PRead' is now a log
+-- hit).  The 'SApp' arm recurses into 'evalApp', never 'evalSTM', so it does not
+-- re-attempt 'readMany#' — that is what makes the post-batch re-evaluation
+-- terminate.
 evalApp :: TxState -> STMPlan a -> IO (STMOutcome a, TxState)
 evalApp st plan = case plan of
   SApp pf px -> do
