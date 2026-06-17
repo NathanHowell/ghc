@@ -67,14 +67,16 @@
 --
 -- Reads are taken from live memory at access time, so between two reads the
 -- interpreter can be running arbitrary user code over a mutually-inconsistent
--- snapshot.  'validateTx' (a 'readTVarIO' pointer-equality walk over 'txReads',
--- allocation-free) is
--- called before a potentially-divergent continuation ('SBind') and at the
--- top-level @Retry@.  A mid-flight mismatch abandons the current attempt as a
+-- snapshot.  'validateTx' is a 'readTVarIO' pointer-equality walk over
+-- 'txReads'.  It is always used at the top-level @Retry@ boundary; 'SBind'
+-- uses 'validateForBind' to validate only reads added since the previous
+-- advisory checkpoint.  A mid-flight mismatch abandons the current attempt as a
 -- @Retry@; 'runAtomically' re-validates the read set before blocking, so an
 -- invalidated (\"zombie\") transaction restarts immediately instead of blocking,
 -- while a genuine @retry@ blocks.  Commit-time validation in 'stmCommitLog#' is
--- the backstop that makes this safe even when the mid-flight check is skipped.
+-- the correctness backstop.  Not re-checking old reads at every advisory
+-- checkpoint can delay zombie detection, but cannot let an inconsistent
+-- transaction commit or block on the wrong wait set.
 --
 -----------------------------------------------------------------------------
 
@@ -106,7 +108,7 @@ import GHC.Internal.Unsafe.Coerce (unsafeCoerce#)
 -- re-export of GHC.Internal.Prim, so import the primitive types/classes directly.
 import GHC.Internal.Prim
 import GHC.Internal.Types ( IO(..), Bool(..), Int(..), Any, isTrue# )
-import GHC.Internal.Classes ( Eq(..), Ord(..), not, (||) )
+import GHC.Internal.Classes ( Eq(..), Ord(..), not )
 import GHC.Internal.Maybe ( Maybe(..) )
 -- Explicit black-holing for SFix (mfix), reusing the fixIO/fixST shape.  These
 -- modules sit below Conc.STM in the import graph (none depend on it), so there
@@ -216,6 +218,8 @@ data TxState = TxState
   { txReads     :: ReadSet   -- monotone reads = wait set = read-validation set;
                              -- never rolled back within an attempt
   , txReadsLen  :: !Int      -- length of txReads (upper bound; pre-dedup)
+  , txCheckedReadsLen :: !Int
+                             -- length at last successful advisory validation
   , txWrites    :: WriteSet  -- speculative writes; rolled back by orElse and catchSTM
   , txWritesLen :: !Int      -- length of txWrites (upper bound; pre-dedup)
   }
@@ -226,7 +230,7 @@ data TxState = TxState
 data STMOutcome a = Ok a | Retry | Raise SomeException
 
 emptyTxState :: TxState
-emptyTxState = TxState [] 0 [] 0
+emptyTxState = TxState [] 0 0 [] 0
 
 -- | Pointer identity of two 'TVar's, via the levity-polymorphic, hetero-typed
 -- 'reallyUnsafePtrEquality#' directly on the boxed 'TVar#' — no 'Addr#'
@@ -463,17 +467,54 @@ validateReads :: ReadSet -> IO Bool
 validateReads = go
   where
     go [] = return True
-    go (ReadEntry tv expected : rest) = do
-      cur <- readTVarIO tv
-      if isTrue# (reallyUnsafePtrEquality# cur expected)
+    go (entry : rest) = do
+      consistent <- validateReadEntry entry
+      if consistent
         then go rest
         else return False
 
--- | Validate the current transaction's read set before a potentially-divergent
--- continuation (C-2), and before committing to a block in 'runAtomically'.
--- 'True' if still consistent.
+-- | Validate the newest @n@ reads in a read set.  Since 'txReads' is cons-front
+-- and 'txCheckedReadsLen' records the length at the last advisory checkpoint,
+-- this is exactly the set of reads added since then.
+validateReadsPrefix :: Int -> ReadSet -> IO Bool
+validateReadsPrefix = go
+  where
+    go n _
+      | n <= 0 = return True
+    go _ [] = return True
+    go n (entry : rest) = do
+      consistent <- validateReadEntry entry
+      if consistent
+        then go (n - 1) rest
+        else return False
+
+validateReadEntry :: ReadEntry -> IO Bool
+validateReadEntry (ReadEntry tv expected) = do
+  cur <- readTVarIO tv
+  return (isTrue# (reallyUnsafePtrEquality# cur expected))
+
+-- | Validate the entire current transaction's read set.  Used before committing
+-- to a block in 'runAtomically'; 'validateForBind' handles advisory mid-flight
+-- checkpoints.  'True' if still consistent.
 validateTx :: TxState -> IO Bool
 validateTx st = validateReads (txReads st)
+
+-- | Advisory mid-flight validation before an 'SBind' continuation.  Only reads
+-- added since the previous checkpoint are checked here.  Older reads are still
+-- validated before blocking and by 'stmCommitLog#' under lock before any
+-- successful commit.  Skipping their repeated mid-flight checks weakens only
+-- early zombie detection: code may run longer on an obsolete snapshot, but it
+-- cannot successfully commit or block until the full read set is checked.
+validateForBind :: TxState -> IO (Bool, TxState)
+validateForBind st =
+  let unchecked = txReadsLen st - txCheckedReadsLen st in
+  if unchecked <= 0
+    then return (True, st)
+    else do
+      consistent <- validateReadsPrefix unchecked (txReads st)
+      if consistent
+        then return (True, st { txCheckedReadsLen = txReadsLen st })
+        else return (False, st)
 
 -----------------------------------------------------------------------------
 -- Logged TVar access.
@@ -597,8 +638,8 @@ tryReadMany st plan =
           -- 'readMany#' gives each TVar an individually-stable read but does not
           -- detect a cross-batch tear (a commit landing between two of the
           -- reads); it always reports 0.  Cross-batch inconsistency is caught
-          -- downstream by 'validateTx' before the next 'SBind' and by the commit
-          -- check, so we always fold the batch in.
+          -- downstream by new-read 'SBind' validation and by the commit check,
+          -- so we always fold the batch in.
           _ <- readManyArraysIO tvars results expected n
           st' <- foldReads st 0 reads results
           (out, st'') <- evalApp st' plan
@@ -652,7 +693,8 @@ foldReads st i (SomeTV tv : rest) results =
 -- is two O(1) field updates — restore the entering 'txWrites', keep the (now
 -- larger) 'txReads' — so both arms share one shape:
 --
---     evalSTM (st { txReads = txReads sub, txReadsLen = txReadsLen sub }) k
+--     evalSTM (st { txReads = txReads sub, txReadsLen = txReadsLen sub
+--                  , txCheckedReadsLen = txCheckedReadsLen sub }) k
 --
 -- where @st@ is the entering state (its 'txWrites' is the rollback target) and
 -- @sub@ is the state after the abandoned branch\/body (its monotone 'txReads'
@@ -717,13 +759,13 @@ evalSTM st plan = case plan of
     (outcome, st') <- evalSTM st p
     case outcome of
       Ok a -> do
-        -- C-2: validate the read set before running the (arbitrary,
+        -- C-2: validate newly-added reads before running the (arbitrary,
         -- potentially-divergent) continuation.  A stale snapshot abandons the
         -- attempt as Retry; runAtomically re-validates and restarts immediately.
-        consistent <- validateTx st'
+        (consistent, st'') <- validateForBind st'
         if consistent
-          then evalSTM st' (k a)
-          else return (Retry, st')
+          then evalSTM st'' (k a)
+          else return (Retry, st'')
       Retry -> return (Retry, st')
       Raise e -> return (Raise e, st')
   SRetry ->
@@ -739,7 +781,9 @@ evalSTM st plan = case plan of
         -- Discard the left branch's writes (restore the entering 'txWrites'),
         -- keep its reads (the monotone 'txReads' already carries the union), then
         -- run the right branch.  See Note [Discard writes, keep reads].
-        evalSTM (st { txReads = txReads stL, txReadsLen = txReadsLen stL }) right
+        evalSTM (st { txReads = txReads stL
+                    , txReadsLen = txReadsLen stL
+                    , txCheckedReadsLen = txCheckedReadsLen stL }) right
   SThrow e ->
     return (Raise e, st)
   SCatch body handler -> do
@@ -754,7 +798,9 @@ evalSTM st plan = case plan of
         -- 'txWrites') but keeps its reads, so the enclosing transaction stays
         -- validated/woken against the snapshot the throw was based on.  Same
         -- shape as the orElse-retry arm; see Note [Discard writes, keep reads].
-        evalSTM (st { txReads = txReads stBody, txReadsLen = txReadsLen stBody })
+        evalSTM (st { txReads = txReads stBody
+                    , txReadsLen = txReadsLen stBody
+                    , txCheckedReadsLen = txCheckedReadsLen stBody })
                 (handler e)
   SUnsafeIO io ->
     catchSTMIO
