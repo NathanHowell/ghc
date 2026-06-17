@@ -716,6 +716,36 @@ unsafeIOToSTM io = STM $ \st ok _ raise -> do
 
 atomically :: STM a -> IO a
 atomically (STM m) = atomicallyIO (runAtomicallyCPS m)
+-- Kept un-inlined so the fast-path RULES below can match @atomically@ at a call
+-- site before it (and its 'readTVar'\/'writeTVar' argument) is simplified away.
+{-# NOINLINE atomically #-}
+
+-- A trivial single-primitive transaction needs no log: a lone read is an atomic
+-- 'readTVarIO', a lone write a single-entry commit, a lone 'newTVar' a plain
+-- 'newTVarIO'.  These RULES rewrite the (very common) /syntactically literal/
+-- @atomically (readTVar t)@ \/ @atomically (writeTVar t v)@ \/
+-- @atomically (newTVar v)@ idioms at compile time, recovering the fast path with
+-- ZERO cost to the CPS representation (the 'STM' newtype stays transparent, so
+-- composed transactions still fuse).  An abstracted @atomically act@ does not
+-- match and runs the full CPS driver, exactly as before.  'readTVar'\/'writeTVar'
+-- are 'INLINE [1]' so they survive un-inlined into the phase-2 rewrite, then
+-- inline for the composed path.
+{-# RULES
+"atomically/readTVar"  forall t.   atomically (readTVar t)    = readTVarIO t
+"atomically/writeTVar" forall t v. atomically (writeTVar t v) = commitSingleWrite t v
+"atomically/newTVar"   forall v.   atomically (newTVar v)     = newTVarIO v
+  #-}
+
+-- | Commit a single @writeTVar@ as its own one-entry transaction, looping on
+-- commit conflict.  Reads the current value for @expected@ on each attempt.  The
+-- RHS of the @atomically/writeTVar@ fast-path rule.
+commitSingleWrite :: TVar a -> a -> IO ()
+commitSingleWrite tv val = loop
+  where
+    loop = do
+      expected <- readTVarIO tv
+      success <- commitTx [WriteEntry tv expected val] 1 [] 0
+      if success then return () else loop
 
 -- | Drive a CPS transaction against the RTS: run it from an empty log with
 -- continuations that commit (on success), validate-and-block or restart (on
@@ -825,6 +855,9 @@ newTVar :: a -> STM (TVar a)
 newTVar val = STM $ \st ok _ _ -> do
   tv <- newTVarIO val
   ok st tv
+-- INLINE [1]: survive un-inlined into the phase-2 @atomically/newTVar@ rewrite,
+-- then inline for the composed path.  See the RULES near 'atomically'.
+{-# INLINE [1] newTVar #-}
 
 -- | @IO@ version of 'newTVar'.  This is useful for creating top-level
 -- 'TVar's using 'System.IO.Unsafe.unsafePerformIO', because using
@@ -850,9 +883,13 @@ readTVar :: TVar a -> STM a
 readTVar tv = STM $ \st ok _ _ -> do
   (a, st') <- readTVarTx st tv
   ok st' a
+-- INLINE [1]: stay un-inlined for the phase-2 @atomically/readTVar@ rewrite,
+-- then inline so the composed CPS path fuses.  See the RULES near 'atomically'.
+{-# INLINE [1] readTVar #-}
 
 -- |Write the supplied value into a 'TVar'.
 writeTVar :: TVar a -> a -> STM ()
 writeTVar tv val = STM $ \st ok _ _ -> do
   st' <- writeTVarTx st tv val
   ok st' ()
+{-# INLINE [1] writeTVar #-}
