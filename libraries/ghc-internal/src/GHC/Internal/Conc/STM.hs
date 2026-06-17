@@ -598,7 +598,7 @@ tryReadMany st plan =
           -- downstream by 'validateTx' before the next 'SBind' and by the commit
           -- check, so we always fold the batch in.
           _ <- readManyArraysIO tvars results expected n
-          st' <- foldReads st 0 n tvars results
+          st' <- foldReads st 0 reads results
           (out, st'') <- evalApp st' plan
           return (Just (out, st''))
     _ -> return Nothing
@@ -615,29 +615,32 @@ readResolvable tv st =
       Just _ -> True
       Nothing -> False
 
--- Fold a readMany# result batch into the read set.  Each TVar becomes a read
--- entry (skipping addresses already in the read set, preserving first-match
--- semantics).  'tryReadMany' has already bailed if any batch TVar was logged on
--- entry, so the only dedup needed here is intra-batch.
+-- Fold a readMany# result batch into the read set.  The 'TVar's come straight
+-- from the typed fragment list ('SomeTV'), paired by position with the snapshot
+-- values 'readMany#' wrote into @results@; each becomes a read entry (skipping
+-- addresses already in the read set, preserving first-match semantics).
+-- 'tryReadMany' has already bailed if any batch TVar was logged on entry, so the
+-- only dedup needed here is intra-batch.
+--
+-- Crucially, the 'TVar's are NOT read back out of the @tvars@ primop array.  A
+-- 'TVar#' stored there is laundered through a /lifted/ 'Any'; rebuilding a 'TVar'
+-- from it (@TVar (unsafeCoerce# any)@) forces that 'Any' into the constructor's
+-- /unlifted/ field, which makes the optimiser enter the 'StgTVar' — a TVAR
+-- closure is not enterable, so at @-O2@ that crashes with \"TVAR object
+-- entered!\".  Carrying the 'TVar's in the list sidesteps the unlifted readback.
 foldReads
   :: TxState
-  -> Int -> Int
-  -> SmallMutableArray# RealWorld Any
+  -> Int
+  -> [SomeTV]
   -> SmallMutableArray# RealWorld Any
   -> IO TxState
-foldReads st i n tvars results
-  | i == n = return st
-  | otherwise = do
-      tvAny <- readSmallArrayIO tvars i
+foldReads st _ [] _ = return st
+foldReads st i (SomeTV tv : rest) results =
+  case readLookup tv (txReads st) of
+    Just _  -> foldReads st (i + 1) rest results
+    Nothing -> do
       valAny <- readSmallArrayIO results i
-      let tv = anyToTVar tvAny
-      case readLookup tv (txReads st) of
-        Just _ -> foldReads st (i + 1) n tvars results
-        Nothing -> foldReads (logRead tv (coerceVal valAny) st) (i + 1) n tvars results
-
-anyToTVar :: Any -> TVar a
-anyToTVar a = TVar (unsafeCoerce# a)
-{-# INLINE anyToTVar #-}
+      foldReads (logRead tv (coerceVal valAny) st) (i + 1) rest results
 
 -- Note [Discard writes, keep reads]
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
