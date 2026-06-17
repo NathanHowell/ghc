@@ -724,9 +724,6 @@ hdStmStartTransactionStr = fsLit "h$stmStartTransaction"
 hdStmCommitLogStr :: FastString
 hdStmCommitLogStr = fsLit "h$stmCommitLog"
 
-hdReadManyStr :: FastString
-hdReadManyStr = fsLit "h$readMany"
-
 hdRegisterLogRangeStr :: FastString
 hdRegisterLogRangeStr = fsLit "h$registerLogRange"
 

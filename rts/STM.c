@@ -876,69 +876,6 @@ StgInt stmCommitLog(Capability *cap,
 
 /*......................................................................*/
 
-// readMany# : batch-read (and optimistically validate) a statically-known
-// fragment read set in one RTS pass.
-//
-// tvars holds the fragment's PRead TVars; this fills results with each TVar's
-// current value and expected with the same snapshot (for later commit/
-// validation), over indices [0, len). Returns 0 if the whole batch was read from
-// a mutually-consistent snapshot, 1 if a concurrent commit was observed
-// mid-batch (caller should restart the fragment). Reads only; takes no locks.
-StgInt stmReadMany(Capability *cap,
-                   StgTSO *tso,
-                   StgSmallMutArrPtrs *tvars,
-                   StgSmallMutArrPtrs *results,
-                   StgSmallMutArrPtrs *expected,
-                   StgInt len) {
-  StgTRecHeader *trec = tso->trec;
-  TRACE("%p : stmReadMany(%" FMT_Word ")", trec, (StgWord)len);
-  ASSERT(trec != NO_TREC);
-
-  // We overwrite traced pointer slots of results/expected; push their old values
-  // for the nonmoving SATB snapshot before the fill.
-  barrier_log_arrays(cap, results, expected, NULL, (StgWord)len);
-
-  for (StgInt i = 0; i < len; i++) {
-    StgTVar *s = (StgTVar *)tvars->payload[i];
-    StgClosure *r;
-#if defined(STM_FG_LOCKS)
-    // Spin past a TREC_HEADER lock stamp (a concurrent committer) as lock_tvar's
-    // inner loop does, but without CASing, then double-load to detect a commit
-    // that landed between the read and the num_updates snapshot.
-    StgInt seen_updates;
-    for (;;) {
-      const StgInfoTable *info;
-      do {
-        r = ACQUIRE_LOAD(&s->current_value);
-        info = GET_INFO(UNTAG_CLOSURE(r));
-      } while (info == &stg_TREC_HEADER_info);
-      seen_updates = SEQ_CST_LOAD(&s->num_updates);
-      if (ACQUIRE_LOAD(&s->current_value) == r &&
-          SEQ_CST_LOAD(&s->num_updates) == seen_updates) {
-        break;
-      }
-    }
-#else
-    r = ACQUIRE_LOAD(&s->current_value);
-#endif
-    results->payload[i] = r;
-    expected->payload[i] = r;
-  }
-
-  recordClosureMutated(cap, (StgClosure *)results);
-  recordClosureMutated(cap, (StgClosure *)expected);
-
-  // Always 0: each TVar above is read with an individually-stable double-load,
-  // but we deliberately do not detect a cross-batch tear (a commit landing
-  // between two of the reads). That is caught downstream by validation before the
-  // next continuation and by the commit-time check; an extra re-snapshot pass
-  // here would only narrow the zombie window, not change correctness.
-  TRACE("%p : stmReadMany()=0", trec);
-  return 0;
-}
-
-/*......................................................................*/
-
 static void register_wait(Capability *cap,
                           StgTSO *tso,
                           StgTRecHeader *trec,

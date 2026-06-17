@@ -1215,19 +1215,6 @@ stg_stmCommitLogzh (P_ tvars, P_ expected, P_ newvals, W_ len)
     return (r);
 }
 
-stg_readManyzh (P_ tvars, P_ results, P_ expected, W_ len)
-{
-    W_ r;
-
-    (r) = ccall stmReadMany(MyCapability() "ptr",
-                            CurrentTSO "ptr",
-                            tvars "ptr",
-                            results "ptr",
-                            expected "ptr",
-                            len);
-    return (r);
-}
-
 stg_registerLogRangezh (P_ tvars, P_ expected, W_ start, W_ end)
 {
     // stmRegisterLogRange may allocate

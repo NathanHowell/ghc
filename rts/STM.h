@@ -113,12 +113,6 @@ StgInt stmCommitLog(Capability *cap,
                     StgSmallMutArrPtrs *expected,
                     StgSmallMutArrPtrs *newvals,
                     StgInt len);
-StgInt stmReadMany(Capability *cap,
-                   StgTSO *tso,
-                   StgSmallMutArrPtrs *tvars,
-                   StgSmallMutArrPtrs *results,
-                   StgSmallMutArrPtrs *expected,
-                   StgInt len);
 void stmRegisterLogRange(Capability *cap,
                           StgTSO *tso,
                           StgSmallMutArrPtrs *tvars,

@@ -25,8 +25,8 @@
 --
 -- == The plan-based applicative STM, in brief
 --
--- @STM a@ is an executable AST ('STMPlan'): @Applicative@ builds 'SApp'
--- fragments, @Monad@ sequencing builds 'SBind', and the control-flow
+-- @STM a@ is an executable AST ('STMPlan'): @Applicative@ builds 'SApp'\/'SFmap'
+-- nodes, @Monad@ sequencing builds 'SBind', and the control-flow
 -- combinators ('retry', 'orElse', 'throwSTM', 'catchSTM', 'unsafeIOToSTM',
 -- 'mfixSTM') each emit a dedicated node.  'atomically' interprets the
 -- plan in @IO@ against an /immutable/ transaction log, yielding one of three
@@ -101,7 +101,6 @@ module GHC.Internal.Conc.STM
 
 import GHC.Internal.Base
 import GHC.Internal.Exception
-import GHC.Internal.List (any, length)
 import GHC.Internal.Num
 import GHC.Internal.Unsafe.Coerce (unsafeCoerce#)
 -- Upstream's "Refine GHC.Internal.Base imports" (6f4f6cf03a) slimmed Base's
@@ -127,10 +126,9 @@ import GHC.Internal.IO.Exception ( FixIOException(..), BlockedIndefinitelyOnMVar
 
 -- | The executable plan that an @STM a@ denotes.  Control flow lives here;
 -- 'STMPrim' nodes are the leaves that actually touch 'TVar's.  'Applicative'
--- combination keeps a maximal effect-free \"fragment\" in 'SApp'\/'SFmap' (so its
--- read and write sets are statically enumerable — the precondition for
--- 'readMany#' batching); any 'Monad' sequencing or control-flow combinator drops
--- to the corresponding dedicated constructor.
+-- combination accumulates primitives in an 'SApp'\/'SFmap' spine; any 'Monad'
+-- sequencing or control-flow combinator drops to the corresponding dedicated
+-- constructor.
 data STMPlan a where
   SPure :: a -> STMPlan a
   SPrim :: STMPrim a -> STMPlan a
@@ -138,9 +136,7 @@ data STMPlan a where
   -- | A deferred 'fmap' over a sub-plan.  Holding the mapped function here makes
   -- 'fmap'\/'planMap' O(1) instead of walking an 'SApp' spine down to its base to
   -- compose the function — which is what stopped a programmatic applicative fold
-  -- (@f \<$\> acc \<*\> readTVar t@, repeated) from being O(n²) to build.  A pure
-  -- post-map preserves the fragment property, so 'fragmentReads' sees through it
-  -- and the read set stays statically enumerable for 'readMany#' batching.
+  -- (@f \<$\> acc \<*\> readTVar t@, repeated) from being O(n²) to build.
   SFmap :: (a -> b) -> STMPlan a -> STMPlan b
   SBind :: STMPlan a -> (a -> STMPlan b) -> STMPlan b
   SRetry :: STMPlan a
@@ -160,9 +156,9 @@ newtype STM a = STM
   }
 
 -- | O(1) in every case.  A bare 'SPure' maps eagerly; a single primitive
--- becomes a clean one-element 'SApp' fragment (so the single-read fast path and
--- 'readMany#' batching keep matching it); nested maps fuse; everything else
--- defers the function in an 'SFmap' rather than rebuilding the sub-plan.
+-- becomes a clean one-element 'SApp' (so the single-read fast path keeps
+-- matching it); nested maps fuse; everything else defers the function in an
+-- 'SFmap' rather than rebuilding the sub-plan.
 -- Deferring is what keeps an accumulating @f \<$\> acc@ from re-traversing — and
 -- re-allocating — the whole 'SApp' spine on every step (the old @SApp@ arm here
 -- was O(depth), making such folds O(n²)).
@@ -178,8 +174,8 @@ planApply pf px = case px of
   SPure x -> planMap ($ x) pf
   SPrim p -> SApp pf p
   SApp inner p -> SApp (planApply (planMap (.) pf) inner) p
-  -- pf <*> (g <$> p) == (\f -> f . g) <$> pf <*> p.  Keeps the right operand's
-  -- fragment batchable without forcing its deferred map; 'planMap' here is O(1).
+  -- pf <*> (g <$> p) == (\f -> f . g) <$> pf <*> p.  Pushes the deferred map into
+  -- the function side without forcing it; 'planMap' here is O(1).
   SFmap g p -> planApply (planMap (\f -> f . g) pf) p
   _ -> SBind pf (\f -> SBind px (\x -> SPure (f x)))
 
@@ -242,8 +238,8 @@ sameTVar (TVar tv1#) (TVar tv2#) = isTrue# (reallyUnsafePtrEquality# tv1# tv2#)
 -- | Coerce a logged value back to the accessor's type.  Sound by the
 -- per-transaction fixed-type invariant documented on the entry types: every
 -- entry for a given 'TVar' was written\/read at the one type the 'TVar' holds.
--- This is the single value-coercion primitive; 'writeLookup', 'readLookup', and
--- 'foldReads' all route through it.
+-- This is the single value-coercion primitive; 'writeLookup' and 'readLookup'
+-- both route through it.
 coerceVal :: a -> b
 coerceVal = unsafeCoerce#
 {-# INLINE coerceVal #-}
@@ -333,17 +329,6 @@ stmCommitLogArraysIO
 stmCommitLogArraysIO tvars expected new (I# len#) =
   stateToIO $ \s0 ->
     case stmCommitLog# tvars expected new len# s0 of
-      (# s1, result# #) -> (# s1, I# result# #)
-
-readManyArraysIO
-  :: SmallMutableArray# RealWorld Any
-  -> SmallMutableArray# RealWorld Any
-  -> SmallMutableArray# RealWorld Any
-  -> Int
-  -> IO Int
-readManyArraysIO tvars results expected (I# len#) =
-  stateToIO $ \s0 ->
-    case readMany# tvars results expected len# s0 of
       (# s1, result# #) -> (# s1, I# result# #)
 
 -----------------------------------------------------------------------------
@@ -578,113 +563,6 @@ evalPrim st prim = case prim of
     tv <- newTVarIO val
     return (tv, st)
 
------------------------------------------------------------------------------
--- Applicative-fragment static analysis (for readMany# batching).  A "fragment"
--- is any plan built solely from SPure / SApp / SPrim: its read set is
--- statically enumerable with no intervening control flow.
------------------------------------------------------------------------------
-
--- | Collect the 'PRead' 'TVar's of a pure applicative fragment in evaluation
--- order, or 'Nothing' if the plan contains control flow (so the read set is not
--- statically known).  We existentially erase the element type — only the
--- address matters for batching.
-fragmentReads :: STMPlan a -> Maybe [SomeTV]
-fragmentReads = go []
-  where
-    go :: [SomeTV] -> STMPlan b -> Maybe [SomeTV]
-    go acc (SPure _) = Just acc
-    go acc (SPrim p) = prim acc p
-    go acc (SApp pf p) = do
-      acc' <- prim acc p
-      go acc' pf
-    go acc (SFmap _ p) = go acc p
-    go _ _ = Nothing
-
-    prim :: [SomeTV] -> STMPrim b -> Maybe [SomeTV]
-    prim acc (PRead tv) = Just (SomeTV tv : acc)
-    prim acc (PWrite _ _) = Just acc
-    prim acc (PNewTVar _) = Just acc
-
-data SomeTV where
-  SomeTV :: TVar a -> SomeTV
-
--- | Batch-read a fragment's read set with 'readMany#', fold the snapshot into
--- 'txReads', then evaluate the fragment against the now-populated log (each
--- 'PRead' becomes a hit; writes proceed normally).  Returns 'Nothing' (caller
--- falls back to per-read evaluation) when the plan is not a fragment, has fewer
--- than two distinct reads (no batch payoff), or has a read already resolvable
--- from the log; otherwise 'Just' the evaluated fragment.
-tryReadMany :: TxState -> STMPlan a -> IO (Maybe (STMOutcome a, TxState))
-tryReadMany st plan =
-  case fragmentReads plan of
-    Just reads@(_ : _ : _)
-      -- 'readMany#' reads live memory.  A TVar this transaction has already
-      -- logged (read or written) carries a value the batch read would miss, so
-      -- when any fragment read is already resolvable from the log, fall back to
-      -- per-read evaluation ('evalApp' -> 'readTVarTx'), which serves those from
-      -- the snapshot.
-      | any (\(SomeTV tv) -> readResolvable tv st) reads ->
-          return Nothing
-      | otherwise -> do
-          let n = length reads
-          MutArr tvars <- newSmallArrayIO n emptyAny
-          MutArr results <- newSmallArrayIO n emptyAny
-          MutArr expected <- newSmallArrayIO n emptyAny
-          let fill _ [] = return ()
-              fill i (SomeTV (TVar tv#) : rest) = do
-                writeSmallArrayIO tvars i (unsafeCoerce# tv#)
-                fill (i + 1) rest
-          fill 0 reads
-          -- 'readMany#' gives each TVar an individually-stable read but does not
-          -- detect a cross-batch tear (a commit landing between two of the
-          -- reads); it always reports 0.  Cross-batch inconsistency is caught
-          -- downstream by new-read 'SBind' validation and by the commit check,
-          -- so we always fold the batch in.
-          _ <- readManyArraysIO tvars results expected n
-          st' <- foldReads st 0 reads results
-          (out, st'') <- evalApp st' plan
-          return (Just (out, st''))
-    _ -> return Nothing
-
--- | Is a read of this 'TVar' resolvable from the current transaction state
--- without touching live memory — i.e. already written or read?  Such TVars must
--- be served by 'readTVarTx', never batched through 'readMany#' (which reads live
--- memory and would miss an earlier logged write).
-readResolvable :: TVar a -> TxState -> Bool
-readResolvable tv st =
-  case writeLookup tv (txWrites st) of
-    Just _ -> True
-    Nothing -> case readLookup tv (txReads st) of
-      Just _ -> True
-      Nothing -> False
-
--- Fold a readMany# result batch into the read set.  The 'TVar's come straight
--- from the typed fragment list ('SomeTV'), paired by position with the snapshot
--- values 'readMany#' wrote into @results@; each becomes a read entry (skipping
--- addresses already in the read set, preserving first-match semantics).
--- 'tryReadMany' has already bailed if any batch TVar was logged on entry, so the
--- only dedup needed here is intra-batch.
---
--- Crucially, the 'TVar's are NOT read back out of the @tvars@ primop array.  A
--- 'TVar#' stored there is laundered through a /lifted/ 'Any'; rebuilding a 'TVar'
--- from it (@TVar (unsafeCoerce# any)@) forces that 'Any' into the constructor's
--- /unlifted/ field, which makes the optimiser enter the 'StgTVar' — a TVAR
--- closure is not enterable, so at @-O2@ that crashes with \"TVAR object
--- entered!\".  Carrying the 'TVar's in the list sidesteps the unlifted readback.
-foldReads
-  :: TxState
-  -> Int
-  -> [SomeTV]
-  -> SmallMutableArray# RealWorld Any
-  -> IO TxState
-foldReads st _ [] _ = return st
-foldReads st i (SomeTV tv : rest) results =
-  case readLookup tv (txReads st) of
-    Just _  -> foldReads st (i + 1) rest results
-    Nothing -> do
-      valAny <- readSmallArrayIO results i
-      foldReads (logRead tv (coerceVal valAny) st) (i + 1) rest results
-
 -- Note [Discard writes, keep reads]
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 -- 'orElse' (when the left branch retries) and 'catchSTM' (when the body throws)
@@ -739,16 +617,20 @@ evalSTM st plan = case plan of
   SPrim p -> do
     (a, st') <- evalPrim st p
     return (Ok a, st')
-  SApp _ _ -> do
-    -- Try a batched read of the whole fragment first; fall back to one-at-a-
-    -- time evaluation if it isn't profitable or observed a concurrent commit.
-    mb <- tryReadMany st plan
-    case mb of
-      Just res -> return res
-      Nothing -> evalApp st plan
+  SApp pf px -> do
+    -- Walk the applicative spine left-to-right, threading the log: evaluate the
+    -- function side, then the trailing primitive ('readTVarTx'\/'writeTVarTx'),
+    -- and apply.  Retry/Raise short-circuit the rest of the spine.
+    (outcome, st') <- evalSTM st pf
+    case outcome of
+      Ok f -> do
+        (x, st'') <- evalPrim st' px
+        return (Ok (f x), st'')
+      Retry -> return (Retry, st')
+      Raise e -> return (Raise e, st')
   SFmap f p -> do
-    -- Evaluate the sub-plan (which may itself be a batchable 'SApp' fragment),
-    -- then apply the deferred map to a successful result.  Retry/Raise pass
+    -- Evaluate the sub-plan (which may itself be an 'SApp' spine), then apply
+    -- the deferred map to a successful result.  Retry/Raise pass
     -- through unmapped, exactly as the old eager 'planMap' arms did.
     (outcome, st') <- evalSTM st p
     case outcome of
@@ -809,36 +691,6 @@ evalSTM st plan = case plan of
         return (Ok a, st))
       (\e -> return (Raise e, st))
   SFix k -> evalFix st k
-
--- One-TVar-at-a-time evaluation of an applicative fragment, via 'evalPrim'.
--- Used both as the 'readMany#' fall-back (reads go through 'readTVarTx') and to
--- re-evaluate a fragment after a successful batch (every 'PRead' is now a log
--- hit).  The 'SApp' arm recurses into 'evalApp', never 'evalSTM', so it does not
--- re-attempt 'readMany#' — that is what makes the post-batch re-evaluation
--- terminate.
-evalApp :: TxState -> STMPlan a -> IO (STMOutcome a, TxState)
-evalApp st plan = case plan of
-  SApp pf px -> do
-    (outcome, st') <- evalApp st pf
-    case outcome of
-      Ok f -> do
-        (x, st'') <- evalPrim st' px
-        return (Ok (f x), st'')
-      Retry -> return (Retry, st')
-      Raise e -> return (Raise e, st')
-  SPrim p -> do
-    (a, st') <- evalPrim st p
-    return (Ok a, st')
-  SPure a -> return (Ok a, st)
-  -- Stay inside the fragment evaluator (recurse into 'evalApp', not 'evalSTM') so
-  -- a post-batch re-evaluation does not re-attempt 'readMany#'.
-  SFmap f p -> do
-    (outcome, st') <- evalApp st p
-    case outcome of
-      Ok a -> return (Ok (f a), st')
-      Retry -> return (Retry, st')
-      Raise e -> return (Raise e, st')
-  _ -> evalSTM st plan
 
 -- | @mfix@ for STM.  Ties the knot inside the transaction, matching the legacy
 -- @MonadFix STM@ semantics, but with /explicit/ black-holing (an MVar-free
@@ -1022,7 +874,7 @@ atomically (STM plan) =
         -- M-3: a lone single-TVar write is the most common trivial transaction
         -- (counters, flags, TMVar puts).  Commit it directly through the log
         -- machinery (one entry → one-element arrays → stmCommitLog#), retrying
-        -- on conflict, with no fragment analysis or separate sort step.
+        -- on conflict, with no spine walk or separate sort step.
         Just (fmap f (commitSingleWrite tv val))
 
 -- | Commit a single @writeTVar@ as its own one-entry transaction, looping on

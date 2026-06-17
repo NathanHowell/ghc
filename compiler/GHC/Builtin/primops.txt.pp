@@ -3158,27 +3158,6 @@ primop  StmCommitLogOp "stmCommitLog#" GenPrimOp
    out_of_line = True
    effect = ReadWriteEffect
 
-primop ReadManyOp "readMany#" GenPrimOp
-   SmallMutableArray# RealWorld a
-   -> SmallMutableArray# RealWorld a
-   -> SmallMutableArray# RealWorld a
-   -> Int#
-   -> State# RealWorld -> (# State# RealWorld, Int# #)
-   { Batch-read a statically-known fragment read set in one RTS pass. @tvars@
-     holds the fragment's PRead TVars; the call fills @results@ with each TVar's
-     current value and @expected@ with the same snapshot (for later
-     commit/validation), over indices [0, len). Each TVar is read with an
-     individually-stable load (no torn single read), but the batch as a whole is
-     not guaranteed to be one atomic snapshot: a concurrent commit landing
-     between two of the reads is not detected here. Always returns 0#;
-     cross-batch consistency is enforced downstream by the read-set validation
-     before the next continuation and by the commit-time check. Reads only; takes no
-     locks. }
-   with
-   strictness  = { \ _arity -> mkClosedDmdSig [topDmd, topDmd, topDmd, topDmd, topDmd] topDiv }
-   out_of_line = True
-   effect = ReadWriteEffect
-
 primop RegisterLogRangeOp "registerLogRange#" GenPrimOp
    SmallMutableArray# RealWorld a
    -> SmallMutableArray# RealWorld a

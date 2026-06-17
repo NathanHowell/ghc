@@ -94,18 +94,6 @@ function h$stmCommitLog(tvars, expected, newvals, len) {
   return 0;
 }
 
-// Batch-read a fragment's read set: fill results and expected with each
-// tvar's current value. The single-threaded JS RTS never observes a
-// concurrent commit, so this cannot fail.
-function h$readMany(tvars, results, expected, len) {
-  for (var i = 0; i < len; i++) {
-    var v = tvars[i].val;
-    results[i]  = v;
-    expected[i] = v;
-  }
-  return 0;
-}
-
 function h$registerLogRange(tvars, expected, start, end) {
   for (var i = start; i < end; i++) {
     h$registerWait(tvars[i], expected[i]);
