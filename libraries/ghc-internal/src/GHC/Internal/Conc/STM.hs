@@ -216,15 +216,18 @@ data STMOutcome a = Ok a | Retry | Raise SomeException
 emptyTxState :: TxState
 emptyTxState = TxState [] 0 [] 0
 
+-- | Pointer identity of two 'TVar's, via the levity-polymorphic, hetero-typed
+-- 'reallyUnsafePtrEquality#' directly on the boxed 'TVar#' — no 'Addr#'
+-- reinterpretation.  This is the one identity primitive; 'tvarSeen' and the
+-- 'Eq' instance both go through it.
 sameTVar :: TVar a -> TVar b -> Bool
-sameTVar (TVar tv1#) (TVar tv2#) =
-  isTrue# (eqAddr# (unsafeCoerce# tv1#) (unsafeCoerce# tv2#))
+sameTVar (TVar tv1#) (TVar tv2#) = isTrue# (reallyUnsafePtrEquality# tv1# tv2#)
 
 -- | Coerce a logged value back to the accessor's type.  Sound by the
 -- per-transaction fixed-type invariant documented on the entry types: every
 -- entry for a given 'TVar' was written\/read at the one type the 'TVar' holds.
--- This is
--- the /single/ place value coercion happens on the read path.
+-- This is the single value-coercion primitive; 'writeLookup', 'readLookup', and
+-- 'foldReads' all route through it.
 coerceVal :: a -> b
 coerceVal = unsafeCoerce#
 {-# INLINE coerceVal #-}
@@ -466,14 +469,30 @@ validateReads reads lenHint = do
   return (result == 0)
 
 -- | Validate the current transaction's read set before a potentially-divergent
--- continuation (C-2).  We validate the wait set, which is exactly the set of
--- live-memory reads.  'True' if still consistent.
+-- continuation (C-2), and before committing to a block in 'runAtomically'.
+-- 'True' if still consistent.
 validateTx :: TxState -> IO Bool
 validateTx st = validateReads (txReads st) (txReadsLen st)
 
 -----------------------------------------------------------------------------
 -- Logged TVar access.
 -----------------------------------------------------------------------------
+
+-- | Cons a read onto the monotone read set, bumping its tracked length.  The
+-- single place 'txReads' grows.
+logRead :: TVar a -> a -> TxState -> TxState
+logRead tv val st = st
+  { txReads    = ReadEntry tv val : txReads st
+  , txReadsLen = txReadsLen st + 1
+  }
+
+-- | Cons a write onto the write set, bumping its tracked length.  The single
+-- place 'txWrites' grows.
+logWrite :: TVar a -> a -> a -> TxState -> TxState
+logWrite tv expected val st = st
+  { txWrites    = WriteEntry tv expected val : txWrites st
+  , txWritesLen = txWritesLen st + 1
+  }
 
 -- | Read a 'TVar' through the log.  Consult writes first (read-your-own-write),
 -- then reads (a consistent re-read), then live memory.  A hit on either log
@@ -490,11 +509,7 @@ readTVarTx st tv =
         Just expected -> return (expected, st)          -- consistent re-read
         Nothing -> do
           val <- readTVarIO tv
-          let st' = st
-                { txReads    = ReadEntry tv val : txReads st
-                , txReadsLen = txReadsLen st + 1
-                }
-          return (val, st')
+          return (val, logRead tv val st)
 
 -- | Write a 'TVar' through the log.  The @expected@ value is the one this
 -- transaction already associates with the 'TVar' — its earlier write's
@@ -509,10 +524,7 @@ writeTVarTx st tv val = do
     Nothing -> case readLookup tv (txReads st) of
       Just ex -> return ex                              -- expected = the value we read
       Nothing -> readTVarIO tv                          -- first touch: read live
-  return st
-    { txWrites    = WriteEntry tv expected val : txWrites st
-    , txWritesLen = txWritesLen st + 1
-    }
+  return (logWrite tv expected val st)
 
 evalPrim :: TxState -> STMPrim a -> IO (a, TxState)
 evalPrim st prim = case prim of
@@ -621,13 +633,7 @@ foldReads st i n tvars results
       let tv = anyToTVar tvAny
       case readLookup tv (txReads st) of
         Just _ -> foldReads st (i + 1) n tvars results
-        Nothing -> do
-          let val = coerceVal valAny
-              st' = st
-                { txReads    = ReadEntry tv val : txReads st
-                , txReadsLen = txReadsLen st + 1
-                }
-          foldReads st' (i + 1) n tvars results
+        Nothing -> foldReads (logRead tv (coerceVal valAny) st) (i + 1) n tvars results
 
 anyToTVar :: Any -> TVar a
 anyToTVar a = TVar (unsafeCoerce# a)
@@ -656,6 +662,25 @@ anyToTVar a = TVar (unsafeCoerce# a)
 -- that was read, and every such read is a genuine read entry that we keep.  A
 -- write whose expected is never read back cannot change the result, so omitting
 -- it changes nothing a caller can detect (it only avoids some spurious retries).
+
+-- Note [Which TxState flows out of each outcome]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- Every 'evalSTM' arm returns @(outcome, st)@.  The 'TxState' that flows out is
+-- NOT always discarded — its 'txReads' is consumed even on the non-Ok outcomes,
+-- so arms must thread the post-evaluation state, not the entering one:
+--
+--   * Ok    — full state committed: 'txWrites' applied, 'txReads' validated.
+--   * Retry — 'txReads' is the wait set.  An enclosing 'orElse' carries it
+--             forward into the sibling branch; at the top level 'runAtomically'
+--             registers it.  'txWrites' is irrelevant (rolled back / unused).
+--   * Raise — 'txReads' is merged by an enclosing 'catchSTM' (the body's reads
+--             keep the handler validated against the throw's snapshot); at the
+--             top level it is discarded by 'raiseIOIO'.  'txWrites' is discarded.
+--
+-- Consequence: 'evalFix' returns @st'@ (post-body) on /every/ arm, because a
+-- @mfix@ body that reads TVars and then retries\/throws must surface those reads
+-- to the enclosing 'orElse'\/'catchSTM'.  'SUnsafeIO' returns @st@ on Raise only
+-- because pure-IO bodies add no reads (so @st == st'@ there).
 
 -----------------------------------------------------------------------------
 -- The interpreter.
@@ -794,7 +819,7 @@ runAtomically plan = go
           -- invalidated/zombie transaction (some logged read has since changed)
           -- restarts immediately; only a genuinely-consistent retry blocks on
           -- the union of every branch's reads.
-          consistent <- validateReads (txReads st) (txReadsLen st)
+          consistent <- validateTx st
           if not consistent
             then go
             else do
@@ -1006,8 +1031,7 @@ data TVar a = TVar (TVar# RealWorld a)
 
 -- | @since base-4.8.0.0
 instance Eq (TVar a) where
-        (TVar tvar1#) == (TVar tvar2#) =
-          isTrue# (eqAddr# (unsafeCoerce# tvar1#) (unsafeCoerce# tvar2#))
+        (==) = sameTVar
 
 -- | Create a new 'TVar' holding a value supplied
 newTVar :: a -> STM (TVar a)
