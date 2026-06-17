@@ -559,8 +559,8 @@ static void commit_log_entries(Capability *cap,
                                StgBool acquire_all) {
   // L-1: invariant -- every committer that changes current_value MUST also bump
   // num_updates (the is_update branch below does both, atomically w.r.t. the
-  // lock held on s). The read-phase validation (check_read_only_log /
-  // stmValidateLog) relies on this: a no-op write (new_val == expected_val) is
+  // lock held on s). The commit-time read validation (check_read_only_log)
+  // relies on this: a no-op write (new_val == expected_val) is
   // suppressed here precisely so that an unchanged TVar's num_updates is never
   // perturbed, keeping the double-load + num_updates recheck sound. Do not bump
   // num_updates without writing current_value, or vice versa.
@@ -876,60 +876,6 @@ StgInt stmCommitLog(Capability *cap,
 
 /*......................................................................*/
 
-// validate# : lock-free, address-independent revalidation of a logged read set.
-//
-// Given parallel arrays of tvars and the expected values observed for them, plus
-// a length, check that every TVar's current value is still pointer-equal to its
-// expected value. Returns 0 if the read set is still consistent, 1 if any TVar
-// has changed (the transaction is a zombie and must restart). Takes no locks and
-// performs no writes; it is the read branch of validate_and_lock_log with the
-// STM_FG_LOCKS double-load + num_updates recheck, but it never CASes.
-StgInt stmValidateLog(Capability *cap STG_UNUSED,
-                      StgTSO *tso,
-                      StgSmallMutArrPtrs *tvars,
-                      StgSmallMutArrPtrs *expected,
-                      StgInt len) {
-  StgTRecHeader *trec = tso->trec;
-  TRACE("%p : stmValidateLog(%" FMT_Word ")", trec, (StgWord)len);
-  ASSERT(trec != NO_TREC);
-
-  if (shake()) {
-    TRACE("%p : shake, pretending log is invalid when it may not be", trec);
-    return 1;
-  }
-
-  for (StgInt i = 0; i < len; i++) {
-    StgTVar *s = (StgTVar *)tvars->payload[i];
-    StgClosure *expected_val = expected->payload[i];
-#if defined(STM_FG_LOCKS)
-    // Double-load + num_updates recheck so we never conclude "consistent" off a
-    // value seen mid-commit (a TREC_HEADER lock stamp or a value about to be
-    // re-checked by num_updates). If a concurrent committer holds the lock, the
-    // stamp differs from expected_val and we report a conflict.
-    StgClosure *current_value = ACQUIRE_LOAD(&s->current_value);
-    StgInt seen_updates = SEQ_CST_LOAD(&s->num_updates);
-    StgClosure *current_value2 = ACQUIRE_LOAD(&s->current_value);
-    if (current_value != expected_val ||
-        current_value2 != expected_val ||
-        seen_updates != SEQ_CST_LOAD(&s->num_updates)) {
-      TRACE("%p : stmValidateLog()=1 (i=%" FMT_Word ")", trec, (StgWord)i);
-      return 1;
-    }
-#else
-    StgClosure *current_value = ACQUIRE_LOAD(&s->current_value);
-    if (current_value != expected_val) {
-      TRACE("%p : stmValidateLog()=1 (i=%" FMT_Word ")", trec, (StgWord)i);
-      return 1;
-    }
-#endif
-  }
-
-  TRACE("%p : stmValidateLog()=0", trec);
-  return 0;
-}
-
-/*......................................................................*/
-
 // readMany# : batch-read (and optimistically validate) a statically-known
 // fragment read set in one RTS pass.
 //
@@ -984,7 +930,7 @@ StgInt stmReadMany(Capability *cap,
 
   // Always 0: each TVar above is read with an individually-stable double-load,
   // but we deliberately do not detect a cross-batch tear (a commit landing
-  // between two of the reads). That is caught downstream by validate# before the
+  // between two of the reads). That is caught downstream by validation before the
   // next continuation and by the commit-time check; an extra re-snapshot pass
   // here would only narrow the zombie window, not change correctness.
   TRACE("%p : stmReadMany()=0", trec);

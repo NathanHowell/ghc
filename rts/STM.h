@@ -113,11 +113,6 @@ StgInt stmCommitLog(Capability *cap,
                     StgSmallMutArrPtrs *expected,
                     StgSmallMutArrPtrs *newvals,
                     StgInt len);
-StgInt stmValidateLog(Capability *cap,
-                      StgTSO *tso,
-                      StgSmallMutArrPtrs *tvars,
-                      StgSmallMutArrPtrs *expected,
-                      StgInt len);
 StgInt stmReadMany(Capability *cap,
                    StgTSO *tso,
                    StgSmallMutArrPtrs *tvars,

@@ -4809,7 +4809,6 @@ module GHC.Base where
   unsafeThawSmallArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)) d. SmallArray# a -> State# d -> (# State# d, SmallMutableArray# d a #)
   until :: forall a. (a -> Bool) -> (a -> a) -> a -> a
   vacuous :: forall (f :: * -> *) a. Functor f => f Void -> f a
-  validate# :: forall a. SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   void# :: (# #)
   waitRead# :: forall d. Int# -> State# d -> State# d
   waitWrite# :: forall d. Int# -> State# d -> State# d
@@ -6884,7 +6883,6 @@ module GHC.Exts where
   unsafeThawArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)) d. Array# a -> State# d -> (# State# d, MutableArray# d a #)
   unsafeThawByteArray# :: forall d. ByteArray# -> State# d -> (# State# d, MutableByteArray# d #)
   unsafeThawSmallArray# :: forall {l :: Levity} (a :: TYPE (BoxedRep l)) d. SmallArray# a -> State# d -> (# State# d, SmallMutableArray# d a #)
-  validate# :: forall a. SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   void# :: (# #)
   waitRead# :: forall d. Int# -> State# d -> State# d
   waitWrite# :: forall d. Int# -> State# d -> State# d

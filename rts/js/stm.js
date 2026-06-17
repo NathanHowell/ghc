@@ -94,17 +94,6 @@ function h$stmCommitLog(tvars, expected, newvals, len) {
   return 0;
 }
 
-// Lock-free read-set validation: 0 if every tvar still holds its expected
-// value, 1 if any changed. The single-threaded JS RTS takes no locks.
-function h$validate(tvars, expected, len) {
-  for (var i = 0; i < len; i++) {
-    if (tvars[i].val !== expected[i]) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
 // Batch-read a fragment's read set: fill results and expected with each
 // tvar's current value. The single-threaded JS RTS never observes a
 // concurrent commit, so this cannot fail.

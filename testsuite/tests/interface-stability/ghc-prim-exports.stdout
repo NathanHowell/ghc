@@ -2768,7 +2768,6 @@ module GHC.Prim where
   unsafeThawArray# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)) d. Array# a -> State# d -> (# State# d, MutableArray# d a #)
   unsafeThawByteArray# :: forall d. ByteArray# -> State# d -> (# State# d, MutableByteArray# d #)
   unsafeThawSmallArray# :: forall {l :: GHC.Internal.Types.Levity} (a :: TYPE (GHC.Internal.Types.BoxedRep l)) d. SmallArray# a -> State# d -> (# State# d, SmallMutableArray# d a #)
-  validate# :: forall a. SmallMutableArray# RealWorld a -> SmallMutableArray# RealWorld a -> Int# -> State# RealWorld -> (# State# RealWorld, Int# #)
   void# :: (# #)
   waitRead# :: forall d. Int# -> State# d -> State# d
   waitWrite# :: forall d. Int# -> State# d -> State# d
@@ -3690,7 +3689,6 @@ module GHC.PrimopWrappers where
   unsafeThawArray# :: forall a_levpoly s. GHC.Internal.Prim.Array# a_levpoly -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.MutableArray# s a_levpoly #)
   unsafeThawByteArray# :: forall s. GHC.Internal.Prim.ByteArray# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.MutableByteArray# s #)
   unsafeThawSmallArray# :: forall a_levpoly s. GHC.Internal.Prim.SmallArray# a_levpoly -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.SmallMutableArray# s a_levpoly #)
-  validate# :: forall a. GHC.Internal.Prim.SmallMutableArray# GHC.Internal.Prim.RealWorld a -> GHC.Internal.Prim.SmallMutableArray# GHC.Internal.Prim.RealWorld a -> GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld -> (# GHC.Internal.Prim.State# GHC.Internal.Prim.RealWorld, GHC.Internal.Prim.Int# #)
   waitRead# :: forall s. GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   waitWrite# :: forall s. GHC.Internal.Prim.Int# -> GHC.Internal.Prim.State# s -> GHC.Internal.Prim.State# s
   whereFrom# :: forall a s. a -> GHC.Internal.Prim.Addr# -> GHC.Internal.Prim.State# s -> (# GHC.Internal.Prim.State# s, GHC.Internal.Prim.Int# #)

@@ -31,13 +31,17 @@ actually starts pointing to the TRec. This fix is already applied on this branch
 
 The old `stmValidateNestOfTransactions` path no longer exists in the log-based
 RTS. Validation is handled by `stmCommitLog#` at commit time and, for incremental
-mid-flight validation, by the `validate#` primop. The Haskell interpreter calls
-`validateTx` (which invokes `validate#` over `txReads`) before
-potentially-divergent `SBind` continuations and at the top-level `Retry` path in
-`runAtomically`. This is the mechanism that prevents "zombie transactions" — a
-transaction that has read a mutually-inconsistent snapshot cannot loop forever or
-throw spurious exceptions, because the mismatch is detected before the continuation
-runs, and the transaction is restarted immediately.
+mid-flight validation, by `validateTx` — an allocation-free Haskell walk over
+`txReads` that `readTVarIO`s each logged `TVar` and compares its current value to
+the logged expected by pointer identity. (`readTVarIO#` spins past a commit lock
+and returns the committed value, so the walk waits out any in-flight committer and
+then compares; it needs no version/`num_updates` recheck, unlike a non-blocking
+primop pass would.) The interpreter calls it before potentially-divergent `SBind`
+continuations and at the top-level `Retry` path in `runAtomically`. This is the
+mechanism that prevents "zombie transactions" — a transaction that has read a
+mutually-inconsistent snapshot cannot loop forever or throw spurious exceptions,
+because the mismatch is detected before the continuation runs, and the transaction
+is restarted immediately.
 
 If a separate pessimistic validation path is reintroduced in future, avoid locking
 read-only TVars; prefer the commit-style version checks for readers.

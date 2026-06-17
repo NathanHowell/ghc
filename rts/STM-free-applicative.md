@@ -73,7 +73,8 @@ access kind**:
   (tvar, expected): the value observed in live memory.
 - **Monotone**: never rolled back within an attempt. It plays all three read
   roles at once — the wait set (registered on `retry`), the mid-flight
-  validation set (`validate#`), and the read-validation half of commit.
+  validation set (`validateTx`, an allocation-free `readTVarIO` walk), and the
+  read-validation half of commit.
 - Grows only on a live-memory read: `readTVarTx` consults writes, then reads,
   then memory, and only a memory miss conses a new entry — so re-reads and
   read-your-own-writes add nothing and `txReads` stays free of duplicate TVars.
@@ -128,7 +129,7 @@ mid-flight registration produces the C-3 bug (sibling branches clobber each
 other's wait sets). The shipped model returns plain `Retry` from `orElse` branches
 and relies on the monotone `txReads` to carry the union.
 
-## Validation (`validate#`)
+## Validation
 
 Reads are taken from live memory at access time. Between two reads, the interpreter
 runs arbitrary user code (`SBind` continuations, case scrutinees, `unsafeIOToSTM`
@@ -136,9 +137,12 @@ bodies). A transaction that has observed mutually-inconsistent TVars can otherwi
 (a) loop forever, (b) throw a spurious exception that escapes `atomically`, or
 (c) run `unsafeIOToSTM` over garbage.
 
-The `validate#` primop performs a lock-free pass over a `(tvars, expected)` array,
-checking `expected == current_value` for each entry (pointer equality, no locking).
-The Haskell wrapper `validateTx` (over `txReads`) is called:
+`validateTx` walks `txReads` directly: it `readTVarIO`s each logged `TVar` and
+checks `expected == current_value` by pointer equality. It allocates nothing — no
+marshalling array (the per-`SBind` check ran on every bind, so an array pass was
+O(n²) over a growing read set). `readTVarIO#` spins past a commit lock and returns
+the committed value, so the walk waits out any in-flight committer and then
+compares; no version/`num_updates` recheck is needed. `validateTx` is called:
 
 1. **Before every `SBind` continuation**: if inconsistent, the continuation is
    abandoned and `Retry` is returned. `runAtomically` re-validates the read set
@@ -156,8 +160,7 @@ the incremental checks narrow the window in which a zombie transaction can run.
 | `stmCommitLog#` | `tvars`, `expected`, `new`, `len` | Sort by address; lock in order; validate `expected` for all entries; commit writes; unpark waiters for actual updates (`expected ≠ new`); unlock. Returns 0 (success) or 1 (conflict). |
 | `registerLogRange#` | `tvars`, `expected`, `start`, `end` | Enqueue the current TSO on each TVar's wait queue for the given range. |
 | `blockOnRegistered#` | — | Validate registered TVars; block the TSO until any change; clear registrations on wake. |
-| `validate#` | `tvars`, `expected`, `len` | Lock-free pointer-equality check of `expected` against live TVar values. Returns 0 (consistent) or 1 (stale). |
-| `readMany#` | `tvars`, `results`, `expected`, `len` | Read all TVars in the array in one pass, filling `results` and `expected`. Each TVar gets an individually-stable read (no torn single read), but the batch is not a guaranteed atomic snapshot — a cross-batch tear is **not** detected. Always returns 0; cross-batch consistency is enforced downstream by `validate#`/commit. |
+| `readMany#` | `tvars`, `results`, `expected`, `len` | Read all TVars in the array in one pass, filling `results` and `expected`. Each TVar gets an individually-stable read (no torn single read), but the batch is not a guaranteed atomic snapshot — a cross-batch tear is **not** detected. Always returns 0; cross-batch consistency is enforced downstream by the read-set validation/commit. |
 
 `stmCommitLog#` takes **4** value arguments (no `flags` argument); an earlier
 draft's 5-argument form was incorrect.
@@ -207,7 +210,7 @@ in the Haskell interpreter. There is no RTS fallback, no plan-compilation phase,
 and no `StgSTMPlan` or `stmExecutePlan`.
 
 `unsafeIOToSTM` re-runs on every attempt (commit conflict or retry), preserving
-legacy semantics. The `validate#` check before `SBind` continuations means the
+legacy semantics. The `validateTx` check before `SBind` continuations means the
 IO body is less likely to run over a wildly inconsistent snapshot, but there is
 no guarantee.
 

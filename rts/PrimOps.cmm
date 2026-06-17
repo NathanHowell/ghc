@@ -1215,18 +1215,6 @@ stg_stmCommitLogzh (P_ tvars, P_ expected, P_ newvals, W_ len)
     return (r);
 }
 
-stg_validatezh (P_ tvars, P_ expected, W_ len)
-{
-    W_ r;
-
-    (r) = ccall stmValidateLog(MyCapability() "ptr",
-                               CurrentTSO "ptr",
-                               tvars "ptr",
-                               expected "ptr",
-                               len);
-    return (r);
-}
-
 stg_readManyzh (P_ tvars, P_ results, P_ expected, W_ len)
 {
     W_ r;

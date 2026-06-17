@@ -3158,22 +3158,6 @@ primop  StmCommitLogOp "stmCommitLog#" GenPrimOp
    out_of_line = True
    effect = ReadWriteEffect
 
-primop ValidateOp "validate#" GenPrimOp
-   SmallMutableArray# RealWorld a
-   -> SmallMutableArray# RealWorld a
-   -> Int#
-   -> State# RealWorld -> (# State# RealWorld, Int# #)
-   { Lock-free incremental validation of a read set. Given parallel arrays of
-     @tvars@ and the @expected@ values observed for them, plus a length, check
-     that every TVar's current value is still pointer-equal to its expected
-     value. Returns 0# if the read set is still consistent, 1# if any TVar has
-     changed (the transaction is a zombie and must restart). Takes no locks and
-     performs no writes. }
-   with
-   strictness  = { \ _arity -> mkClosedDmdSig [topDmd, topDmd, topDmd, topDmd] topDiv }
-   out_of_line = True
-   effect = ReadWriteEffect
-
 primop ReadManyOp "readMany#" GenPrimOp
    SmallMutableArray# RealWorld a
    -> SmallMutableArray# RealWorld a
@@ -3187,8 +3171,8 @@ primop ReadManyOp "readMany#" GenPrimOp
      individually-stable load (no torn single read), but the batch as a whole is
      not guaranteed to be one atomic snapshot: a concurrent commit landing
      between two of the reads is not detected here. Always returns 0#;
-     cross-batch consistency is enforced downstream by @validate#@ before the
-     next continuation and by the commit-time check. Reads only; takes no
+     cross-batch consistency is enforced downstream by the read-set validation
+     before the next continuation and by the commit-time check. Reads only; takes no
      locks. }
    with
    strictness  = { \ _arity -> mkClosedDmdSig [topDmd, topDmd, topDmd, topDmd, topDmd] topDiv }

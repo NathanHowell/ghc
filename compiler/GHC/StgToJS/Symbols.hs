@@ -724,9 +724,6 @@ hdStmStartTransactionStr = fsLit "h$stmStartTransaction"
 hdStmCommitLogStr :: FastString
 hdStmCommitLogStr = fsLit "h$stmCommitLog"
 
-hdValidateStr :: FastString
-hdValidateStr = fsLit "h$validate"
-
 hdReadManyStr :: FastString
 hdReadManyStr = fsLit "h$readMany"
 

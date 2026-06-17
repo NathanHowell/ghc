@@ -924,8 +924,6 @@ genPrim prof bound ty op = case op of
   AtomicallyOp -> \[_r] [a]   -> pure $ PRPrimCall $ returnS (app hdAtomicallyStr [a])
   StmCommitLogOp -> \[r] [tvars, expected, newvals, len] -> pure $ PrimInline $
     r |= app hdStmCommitLogStr [tvars, expected, newvals, len]
-  ValidateOp -> \[r] [tvars, expected, len] -> pure $ PrimInline $
-    r |= app hdValidateStr [tvars, expected, len]
   ReadManyOp -> \[r] [tvars, results, expected, len] -> pure $ PrimInline $
     r |= app hdReadManyStr [tvars, results, expected, len]
   RegisterLogRangeOp -> \[] [tvars, expected, start, end] -> pure $ PrimInline $

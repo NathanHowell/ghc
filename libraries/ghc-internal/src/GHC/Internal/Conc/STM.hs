@@ -67,7 +67,8 @@
 --
 -- Reads are taken from live memory at access time, so between two reads the
 -- interpreter can be running arbitrary user code over a mutually-inconsistent
--- snapshot.  'validateTx' (the lock-free 'validate#' primop over 'txReads') is
+-- snapshot.  'validateTx' (a 'readTVarIO' pointer-equality walk over 'txReads',
+-- allocation-free) is
 -- called before a potentially-divergent continuation ('SBind') and at the
 -- top-level @Retry@.  A mid-flight mismatch abandons the current attempt as a
 -- @Retry@; 'runAtomically' re-validates the read set before blocking, so an
