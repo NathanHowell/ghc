@@ -77,3 +77,13 @@ test('stm_validate_readMany',
      , wasm_skip
      ],
      compile_and_run, [''])
+
+test('stm_catch_wait',
+     [ req_ghc_smp
+     , req_target_smp
+     , only_ways(threaded_ways)
+     , extra_run_opts('+RTS -N4 -RTS')
+     , js_skip
+     , wasm_skip
+     ],
+     compile_and_run, [''])

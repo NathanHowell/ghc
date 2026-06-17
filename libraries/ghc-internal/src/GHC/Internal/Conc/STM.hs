@@ -33,41 +33,44 @@
 -- outcomes ('STMOutcome': @Ok@, @Retry@, @Raise@), then commits/blocks/rethrows
 -- against the RTS.
 --
--- == Two immutable lists, not one mutable SoA log
+-- == The log, split by access kind
 --
--- The log is split into two persistent (cons-front) association lists; see
--- @rts/STM-free-applicative.md@ \"The elegant target\".
+-- The log is two persistent (cons-front) association lists, split by access
+-- kind; see @rts/STM-free-applicative.md@ \"The elegant target\".
 --
---   * 'txLog' — the reads /and/ writes the transaction has performed.  Rolled
---     back by /both/ 'orElse' (discard a branch) and 'catchSTM' (forget a
---     caught body) simply by handing the alternative the captured prior list.
---     Used only on the @Ok@ path: marshalled (and de-duplicated) into arrays
---     for 'stmCommitLog#'.
+--   * 'txReads' — the 'TVar's read from live memory, each with the observed
+--     value.  /Monotone/: never rolled back within an attempt.  This single
+--     list plays all three read roles — it is the wait set (registered on a
+--     @retry@), the mid-flight validation set, and the read-validation half of
+--     commit.
 --
---   * 'txWait' — a /monotone/, reads-only wait set.  An 'orElse' branch extends
---     it even when that branch is discarded (so a full @retry@ waits on the
---     union of every branch's reads), but 'catchSTM' rolls it back with the
---     body.  Used only on the @Retry@ path: registered exactly once, in
---     'runAtomically', via 'registerLogRange#'.
+--   * 'txWrites' — the 'TVar's written, each with its @expected@ (pre-write)
+--     and new value.  Speculative: rolled back by /both/ 'orElse' (discard a
+--     branch) and 'catchSTM' (forget a caught body), simply by restoring the
+--     captured entering list.
 --
--- Splitting the two roles is what lets registration happen exactly once at the
--- top (no mid-flight @clearRegistrations#@ churn, no @RetryWithWait@ outcome,
--- no @differenceTxLog@): nothing can clobber a sibling 'orElse' branch's
--- registration because nothing registers until the whole transaction retries.
+-- Splitting by access kind is what makes the control-flow combinators cheap and
+-- uniform.  'orElse' (left retries) and 'catchSTM' (body throws) both reduce to
+-- /restore the entering writes, keep the monotone reads/ — two O(1) field
+-- updates, no diffing, no spine rebuild (see Note [Discard writes, keep reads]).
+-- It is also why registration happens exactly once at the top (no mid-flight
+-- @clearRegistrations#@ churn, no @RetryWithWait@ outcome, no @differenceTxLog@):
+-- the monotone read set already holds the union of every branch's reads, so
+-- nothing registers until the whole transaction retries.
 --
 -- Both lists insert by /consing to the front/ (O(1), no spine rebuild) and look
 -- up by /first match/; de-duplication is deferred to the single commit
--- marshalling pass.  Lengths are tracked incrementally so the marshalling pass
--- needs no separate @length@ traversal.
+-- marshalling pass (where writes shadow reads of the same 'TVar').  Lengths are
+-- tracked incrementally so marshalling needs no separate @length@ traversal.
 --
 -- == Validation
 --
 -- Reads are taken from live memory at access time, so between two reads the
 -- interpreter can be running arbitrary user code over a mutually-inconsistent
--- snapshot.  'validateLog' (the lock-free 'validate#' primop over the read set)
--- is called before a potentially-divergent continuation ('SBind') and at the
+-- snapshot.  'validateTx' (the lock-free 'validate#' primop over 'txReads') is
+-- called before a potentially-divergent continuation ('SBind') and at the
 -- top-level @Retry@.  A mid-flight mismatch abandons the current attempt as a
--- @Retry@; 'runAtomically' re-validates the wait set before blocking, so an
+-- @Retry@; 'runAtomically' re-validates the read set before blocking, so an
 -- invalidated (\"zombie\") transaction restarts immediately instead of blocking,
 -- while a genuine @retry@ blocks.  Commit-time validation in 'stmCommitLog#' is
 -- the backstop that makes this safe even when the mid-flight check is skipped.
@@ -166,38 +169,43 @@ planApply pf px = case px of
   SApp inner p -> SApp (planApply (planMap (.) pf) inner) p
   _ -> SBind pf (\f -> SBind px (\x -> SPure (f x)))
 
--- | A single log entry: @(tvar, expected, new)@.  @expected@ is the value read
--- from live memory at first access; @new@ is the value read or last written.
--- @expected == new@ (pointer equality) marks a read-only entry.
---
--- The existential + 'unsafeCoerce#' is inherent at this layer (below
--- @containers@): a heterogeneous @TVar a -> (a, a)@ map cannot be expressed
--- otherwise.  The value coercions are confined to 'logLookup'\/'reads' and rely
--- on the per-transaction invariant that a given 'TVar' is always stored at the
--- single type it was created with (see 'sameTVar' — keyed purely on address).
-data TxEntry where
-  TxEntry :: TVar a -> a -> a -> TxEntry
+-- The existential + 'unsafeCoerce#' in both entry types is inherent at this
+-- layer (below @containers@): a heterogeneous @TVar a -> ...@ map cannot be
+-- expressed otherwise.  The value coercions are confined to 'writeLookup',
+-- 'readLookup', and the marshallers, and rely on the per-transaction invariant
+-- that a given 'TVar' is always stored at the single type it was created with
+-- (see 'sameTVar' — keyed purely on address).
 
--- | A wait-set entry: @(tvar, expected)@.  Reads-only; the wait set never
--- carries write targets, so write-only 'TVar's are never registered as waiters.
-data WaitEntry where
-  WaitEntry :: TVar a -> a -> WaitEntry
+-- | A logged write: @(tvar, expected, new)@.  @expected@ is the value the
+-- transaction first observed for the 'TVar' (read live, or carried from an
+-- earlier entry); @new@ is the value written.  A no-op write has
+-- @expected == new@.
+data WriteEntry where
+  WriteEntry :: TVar a -> a -> a -> WriteEntry
 
--- Entries are (tvar, expected, new).  Immutable, cons-front; at most one
--- /logical/ entry per TVar after de-duplication at the commit boundary.
-type TxLog = [TxEntry]
+-- | A logged read: @(tvar, expected)@, where @expected@ is the value observed
+-- in live memory.  The read set doubles as the wait set: the reads are exactly
+-- the 'TVar's a blocked transaction waits on, and exactly the set validated for
+-- consistency at commit and mid-flight.
+data ReadEntry where
+  ReadEntry :: TVar a -> a -> ReadEntry
 
--- Reads-only, monotone, cons-front.
-type WaitSet = [WaitEntry]
+-- Immutable, cons-front; at most one /logical/ entry per TVar after the commit
+-- marshalling pass de-duplicates (writes shadow reads, newer shadows older).
+type WriteSet = [WriteEntry]
+type ReadSet  = [ReadEntry]
 
--- | The transaction state threaded through the interpreter.  Two immutable
--- lists (see the module header), each with an incrementally-tracked length so
--- marshalling needs no @length@ pass.
+-- | The transaction state threaded through the interpreter.  The log is split
+-- by access kind into two immutable cons-front lists (see the module header),
+-- each with an incrementally-tracked length so marshalling needs no @length@
+-- pass.  The split is what makes 'orElse' and 'catchSTM' O(1): both keep the
+-- monotone reads and restore only the writes.
 data TxState = TxState
-  { txLog     :: TxLog    -- reads + writes; rolled back by orElse and catchSTM
-  , txLogLen  :: !Int     -- length of txLog (upper bound; pre-dedup)
-  , txWait    :: WaitSet  -- monotone reads-only wait set
-  , txWaitLen :: !Int     -- length of txWait (upper bound; pre-dedup)
+  { txReads     :: ReadSet   -- monotone reads = wait set = read-validation set;
+                             -- never rolled back within an attempt
+  , txReadsLen  :: !Int      -- length of txReads (upper bound; pre-dedup)
+  , txWrites    :: WriteSet  -- speculative writes; rolled back by orElse and catchSTM
+  , txWritesLen :: !Int      -- length of txWrites (upper bound; pre-dedup)
   }
 
 -- The three-outcome model (Ok | Retry | Raise).  A mid-flight validation
@@ -213,22 +221,30 @@ sameTVar (TVar tv1#) (TVar tv2#) =
   isTrue# (eqAddr# (unsafeCoerce# tv1#) (unsafeCoerce# tv2#))
 
 -- | Coerce a logged value back to the accessor's type.  Sound by the
--- per-transaction fixed-type invariant documented on 'TxEntry': every entry for
--- a given 'TVar' was written\/read at the one type the 'TVar' holds.  This is
+-- per-transaction fixed-type invariant documented on the entry types: every
+-- entry for a given 'TVar' was written\/read at the one type the 'TVar' holds.
+-- This is
 -- the /single/ place value coercion happens on the read path.
 coerceVal :: a -> b
 coerceVal = unsafeCoerce#
 {-# INLINE coerceVal #-}
 
--- Like Prelude.lookup, but specialised for the TxLog association list and
--- returning the most-recent (front-most) entry.  O(1) amortised on the common
--- hit; linear on a miss.  Linear lookup is irreducible for a list at this
--- layer, and is the only non-constant operation now that insert is cons-front.
-logLookup :: TVar a -> TxLog -> Maybe (a, a)
-logLookup _ [] = Nothing
-logLookup tv (TxEntry tv' expected newVal : rest)
+-- Front-most lookup in the write set, returning @(expected, new)@.  Linear on a
+-- miss; O(1) amortised on the common hit.  Linear lookup is irreducible for a
+-- heterogeneous association list at this layer, and is the only non-constant
+-- operation now that insert is cons-front.
+writeLookup :: TVar a -> WriteSet -> Maybe (a, a)
+writeLookup _ [] = Nothing
+writeLookup tv (WriteEntry tv' expected newVal : rest)
   | sameTVar tv tv' = Just (coerceVal expected, coerceVal newVal)
-  | otherwise = logLookup tv rest
+  | otherwise = writeLookup tv rest
+
+-- Front-most lookup in the read set, returning the observed @expected@ value.
+readLookup :: TVar a -> ReadSet -> Maybe a
+readLookup _ [] = Nothing
+readLookup tv (ReadEntry tv' expected : rest)
+  | sameTVar tv tv' = Just (coerceVal expected)
+  | otherwise = readLookup tv rest
 
 stateToIO :: (State# RealWorld -> (# State# RealWorld, a #)) -> IO a
 stateToIO = IO
@@ -327,64 +343,79 @@ readManyArraysIO tvars results expected (I# len#) =
 -- entry per TVar; everything upstream cons-es freely.
 -----------------------------------------------------------------------------
 
--- | Marshal a 'TxLog' into freshly-allocated @(tvars, expected, new)@ arrays,
--- de-duplicating to the front-most entry per 'TVar'.  Returns the boxed arrays
--- and the de-duplicated length.  @lenHint@ is the incrementally-tracked upper
--- bound used to size the arrays.
-marshalLog :: TxLog -> Int -> IO (MutArr, MutArr, MutArr, Int)
-marshalLog log lenHint = do
-  MutArr tvars <- newSmallArrayIO lenHint emptyAny
-  MutArr expected <- newSmallArrayIO lenHint emptyAny
-  MutArr new <- newSmallArrayIO lenHint emptyAny
-  let go _ [] = return (MutArr tvars, MutArr expected, MutArr new, 0)
-      go i (TxEntry (TVar tv#) expectedVal newVal : rest) = do
+-- | Marshal the write set followed by the read set into freshly-allocated
+-- @(tvars, expected, new)@ arrays for 'stmCommitLog#', de-duplicating to one
+-- entry per 'TVar'.  Writes are emitted first so that a written 'TVar' shadows
+-- any read of it (the commit must apply the write, not merely validate the read
+-- value); reads are then emitted as no-op entries (@expected == new@) so the
+-- commit validates them without perturbing @num_updates@.  The running fill
+-- index doubles as the de-duplicated count.  @writeHint@\/@readHint@ are the
+-- incrementally-tracked upper bounds used to size the arrays.
+marshalCommit :: WriteSet -> Int -> ReadSet -> Int -> IO (MutArr, MutArr, MutArr, Int)
+marshalCommit writes writeHint reads readHint = do
+  MutArr tvars    <- newSmallArrayIO (writeHint + readHint) emptyAny
+  MutArr expected <- newSmallArrayIO (writeHint + readHint) emptyAny
+  MutArr new      <- newSmallArrayIO (writeHint + readHint) emptyAny
+  let goW i [] = goR i reads
+      goW i (WriteEntry (TVar tv#) ex nv : rest) = do
         -- Cons-front means the first occurrence is the most recent; a TVar
         -- already emitted (closer to the front) shadows this older entry.
         already <- tvarSeen tvars i (unsafeCoerce# tv#)
         if already
-          then go i rest
+          then goW i rest
           else do
             writeSmallArrayIO tvars i (unsafeCoerce# tv#)
-            writeSmallArrayIO expected i (unsafeCoerce# expectedVal)
-            writeSmallArrayIO new i (unsafeCoerce# newVal)
-            (a, b, c, n) <- go (i + 1) rest
-            return (a, b, c, n + 1)
-  go 0 log
+            writeSmallArrayIO expected i (unsafeCoerce# ex)
+            writeSmallArrayIO new i (unsafeCoerce# nv)
+            goW (i + 1) rest
+      goR i [] = return (MutArr tvars, MutArr expected, MutArr new, i)
+      goR i (ReadEntry (TVar tv#) ex : rest) = do
+        -- Skip if this TVar was already emitted — by a write (shadowed) or an
+        -- earlier read of the same TVar.
+        already <- tvarSeen tvars i (unsafeCoerce# tv#)
+        if already
+          then goR i rest
+          else do
+            writeSmallArrayIO tvars i (unsafeCoerce# tv#)
+            writeSmallArrayIO expected i (unsafeCoerce# ex)
+            writeSmallArrayIO new i (unsafeCoerce# ex)
+            goR (i + 1) rest
+  goW 0 writes
 
--- | Marshal a reads-only 'WaitSet' into @(tvars, expected)@ arrays, de-duped.
-marshalWait :: WaitSet -> Int -> IO (MutArr, MutArr, Int)
-marshalWait waits lenHint = do
+-- | Marshal the read set into @(tvars, expected)@ arrays, de-duped (front-most
+-- per 'TVar').  Used to register the wait set.
+marshalReads :: ReadSet -> Int -> IO (MutArr, MutArr, Int)
+marshalReads reads lenHint = do
   MutArr tvars <- newSmallArrayIO lenHint emptyAny
   MutArr expected <- newSmallArrayIO lenHint emptyAny
-  let go _ [] = return (MutArr tvars, MutArr expected, 0)
-      go i (WaitEntry (TVar tv#) expectedVal : rest) = do
+  let go i [] = return (MutArr tvars, MutArr expected, i)
+      go i (ReadEntry (TVar tv#) ex : rest) = do
         already <- tvarSeen tvars i (unsafeCoerce# tv#)
         if already
           then go i rest
           else do
             writeSmallArrayIO tvars i (unsafeCoerce# tv#)
-            writeSmallArrayIO expected i (unsafeCoerce# expectedVal)
-            (a, b, n) <- go (i + 1) rest
-            return (a, b, n + 1)
-  go 0 waits
+            writeSmallArrayIO expected i (unsafeCoerce# ex)
+            go (i + 1) rest
+  go 0 reads
 
--- | Marshal a reads-only 'WaitSet' into @(tvars, expected)@ arrays /without/
+-- | Marshal the read set into @(tvars, expected)@ arrays /without/
 -- de-duplication, in a single O(n) pass.  Used only for validation, where a
 -- duplicate TVar just costs a redundant (harmless) pointer compare: skipping the
 -- O(n)-per-entry 'tvarSeen' dedup scan turns each validation from O(n²) into
 -- O(n), which is what keeps a long orElse/bind chain (e.g. #26028's 50k-branch
 -- @foldr1 orElse@) from going cubic overall.  @lenHint@ must be an upper bound on
 -- the spine length.
-marshalWaitNoDedup :: WaitSet -> Int -> IO (MutArr, MutArr, Int)
-marshalWaitNoDedup waits lenHint = do
+marshalReadsNoDedup :: ReadSet -> Int -> IO (MutArr, MutArr, Int)
+marshalReadsNoDedup reads lenHint = do
   MutArr tvars <- newSmallArrayIO lenHint emptyAny
   MutArr expected <- newSmallArrayIO lenHint emptyAny
   let go i [] = return (MutArr tvars, MutArr expected, i)
-      go i (WaitEntry (TVar tv#) expectedVal : rest) = do
+      go i (ReadEntry (TVar tv#) ex : rest) = do
         writeSmallArrayIO tvars i (unsafeCoerce# tv#)
-        writeSmallArrayIO expected i (unsafeCoerce# expectedVal)
+        writeSmallArrayIO expected i (unsafeCoerce# ex)
         go (i + 1) rest
-  go 0 waits
+  go 0 reads
 
 -- Has this TVar pointer already been written into tvars[0..count)?  Uses the
 -- levity-polymorphic, hetero-typed 'reallyUnsafePtrEquality#' for direct boxed
@@ -405,27 +436,32 @@ tvarSeen arr count target = loop 0
 -- Commit / validate / register against the RTS.
 -----------------------------------------------------------------------------
 
-commitTxLog :: TxLog -> Int -> IO Bool
-commitTxLog [] _ = return True
-commitTxLog log lenHint = do
-  (MutArr tvars, MutArr expected, MutArr new, n) <- marshalLog log lenHint
+-- | Commit the transaction: validate the read set and validate-then-apply the
+-- write set, all in one sorted 'stmCommitLog#' pass.  'True' on success.  An
+-- all-empty transaction commits trivially; a read-only transaction (no writes)
+-- still goes through the pass so its reads are validated.
+commitTx :: WriteSet -> Int -> ReadSet -> Int -> IO Bool
+commitTx [] _ [] _ = return True
+commitTx writes writeHint reads readHint = do
+  (MutArr tvars, MutArr expected, MutArr new, n) <-
+    marshalCommit writes writeHint reads readHint
   result <- stmCommitLogArraysIO tvars expected new n
   return (result == 0)
 
--- | Register the whole monotone wait set on the RTS wait queues, exactly once.
-registerWaitSet :: WaitSet -> Int -> IO ()
-registerWaitSet [] _ = return ()
-registerWaitSet waits lenHint = do
-  (MutArr tvars, MutArr expected, n) <- marshalWait waits lenHint
+-- | Register the whole monotone read set on the RTS wait queues, exactly once.
+registerReads :: ReadSet -> Int -> IO ()
+registerReads [] _ = return ()
+registerReads reads lenHint = do
+  (MutArr tvars, MutArr expected, n) <- marshalReads reads lenHint
   registerLogRangeArraysIO tvars expected 0 n
 
--- | Lock-free validate the reads-only wait set.  'True' if still consistent.
--- Uses the non-deduping marshal: 'validate#' tolerates (and a repeated read is
--- idempotent for) duplicate TVars, so we avoid the quadratic dedup scan.
-validateWaitSet :: WaitSet -> Int -> IO Bool
-validateWaitSet [] _ = return True
-validateWaitSet waits lenHint = do
-  (MutArr tvars, MutArr expected, n) <- marshalWaitNoDedup waits lenHint
+-- | Lock-free validate the read set.  'True' if still consistent.  Uses the
+-- non-deduping marshal: 'validate#' tolerates (and a repeated read is idempotent
+-- for) duplicate TVars, so we avoid the quadratic dedup scan.
+validateReads :: ReadSet -> Int -> IO Bool
+validateReads [] _ = return True
+validateReads reads lenHint = do
+  (MutArr tvars, MutArr expected, n) <- marshalReadsNoDedup reads lenHint
   result <- validateArraysIO tvars expected n
   return (result == 0)
 
@@ -433,52 +469,50 @@ validateWaitSet waits lenHint = do
 -- continuation (C-2).  We validate the wait set, which is exactly the set of
 -- live-memory reads.  'True' if still consistent.
 validateTx :: TxState -> IO Bool
-validateTx st = validateWaitSet (txWait st) (txWaitLen st)
+validateTx st = validateReads (txReads st) (txReadsLen st)
 
 -----------------------------------------------------------------------------
 -- Logged TVar access.
 -----------------------------------------------------------------------------
 
--- | Read a 'TVar' through the log.  A hit returns the logged @new@ value and
--- records no new dependency (the dependency, if any, was captured when the
--- entry's @expected@ was first established).  A miss reads live memory, conses
--- a read-only entry onto 'txLog' /and/ a @(tvar, value)@ entry onto the monotone
--- 'txWait' (this is the only place the wait set grows — keeping it exactly the
--- set of live-memory reads, never write-only TVars).
+-- | Read a 'TVar' through the log.  Consult writes first (read-your-own-write),
+-- then reads (a consistent re-read), then live memory.  A hit on either log
+-- records no new dependency — the dependency was captured when the write's or
+-- read's @expected@ was first established.  Only a live-memory miss grows the
+-- read set, keeping it exactly the set of live-memory reads (never write-only
+-- TVars).
 readTVarTx :: TxState -> TVar a -> IO (a, TxState)
 readTVarTx st tv =
-  case logLookup tv (txLog st) of
-    Just (_, newVal) ->
-      return (newVal, st)
-    Nothing -> do
-      val <- readTVarIO tv
-      let st' = st
-            { txLog     = TxEntry tv val val : txLog st
-            , txLogLen  = txLogLen st + 1
-            , txWait    = WaitEntry tv val : txWait st
-            , txWaitLen = txWaitLen st + 1
-            }
-      return (val, st')
+  case writeLookup tv (txWrites st) of
+    Just (_, newVal) -> return (newVal, st)            -- read your own write
+    Nothing ->
+      case readLookup tv (txReads st) of
+        Just expected -> return (expected, st)          -- consistent re-read
+        Nothing -> do
+          val <- readTVarIO tv
+          let st' = st
+                { txReads    = ReadEntry tv val : txReads st
+                , txReadsLen = txReadsLen st + 1
+                }
+          return (val, st')
 
--- | Write a 'TVar' through the log.  On a hit, cons a fresh entry carrying the
--- /original/ @expected@ and the new value (front-most wins at marshalling, so
--- this is last-write-wins without rewriting the spine).  On a miss, read live
--- memory for @expected@.  Writes never touch the wait set (write-only TVars are
--- not waited on).
+-- | Write a 'TVar' through the log.  The @expected@ value is the one this
+-- transaction already associates with the 'TVar' — its earlier write's
+-- @expected@, or the value it read — else a fresh live read on first touch.
+-- Cons a fresh entry to the front (front-most wins at marshalling, so this is
+-- last-write-wins without rewriting the spine).  Writes never touch the read
+-- set (write-only TVars are not waited on).
 writeTVarTx :: TxState -> TVar a -> a -> IO TxState
-writeTVarTx st tv val =
-  case logLookup tv (txLog st) of
-    Just (expected, _) ->
-      return st
-        { txLog    = TxEntry tv expected val : txLog st
-        , txLogLen = txLogLen st + 1
-        }
-    Nothing -> do
-      expected <- readTVarIO tv
-      return st
-        { txLog    = TxEntry tv expected val : txLog st
-        , txLogLen = txLogLen st + 1
-        }
+writeTVarTx st tv val = do
+  expected <- case writeLookup tv (txWrites st) of
+    Just (ex, _) -> return ex                           -- keep the original expected
+    Nothing -> case readLookup tv (txReads st) of
+      Just ex -> return ex                              -- expected = the value we read
+      Nothing -> readTVarIO tv                          -- first touch: read live
+  return st
+    { txWrites    = WriteEntry tv expected val : txWrites st
+    , txWritesLen = txWritesLen st + 1
+    }
 
 evalPrim :: TxState -> STMPrim a -> IO (a, TxState)
 evalPrim st prim = case prim of
@@ -520,8 +554,8 @@ data SomeTV where
   SomeTV :: TVar a -> SomeTV
 
 -- | Batch-read a fragment's read set with 'readMany#' and fold the snapshot
--- into 'txLog'\/'txWait', then evaluate the fragment against the now-populated
--- log (each 'PRead' becomes a hit; writes proceed normally).  Returns 'Nothing'
+-- into 'txReads', then evaluate the fragment against the now-populated log (each
+-- 'PRead' becomes a hit; writes proceed normally).  Returns 'Nothing'
 -- and leaves the state untouched if the batch observed a concurrent commit
 -- (caller restarts the fragment) — but only attempts the batch for fragments
 -- with at least two distinct reads, where it pays off.
@@ -556,19 +590,21 @@ tryReadMany st plan =
     _ -> return Nothing
 
 -- | Is a read of this 'TVar' resolvable from the current transaction state
--- without touching live memory — i.e. already in the log?  Such TVars must be
--- served by 'readTVarTx', never batched through 'readMany#' (which reads live
+-- without touching live memory — i.e. already written or read?  Such TVars must
+-- be served by 'readTVarTx', never batched through 'readMany#' (which reads live
 -- memory and would miss an earlier logged write).
 readResolvable :: TVar a -> TxState -> Bool
-readResolvable tv st = logged (txLog st)
-  where
-    logged []                      = False
-    logged (TxEntry tv' _ _ : rest) = sameTVar tv tv' || logged rest
+readResolvable tv st =
+  case writeLookup tv (txWrites st) of
+    Just _ -> True
+    Nothing -> case readLookup tv (txReads st) of
+      Just _ -> True
+      Nothing -> False
 
--- Fold a readMany# result batch into the log and monotone wait set.  Each TVar
--- becomes a read-only log entry and a wait entry (skipping addresses already
--- logged, preserving the "exactly the live-memory reads" wait-set invariant and
--- first-match semantics).
+-- Fold a readMany# result batch into the read set.  Each TVar becomes a read
+-- entry (skipping addresses already in the read set, preserving first-match
+-- semantics).  'tryReadMany' has already bailed if any batch TVar was logged on
+-- entry, so the only dedup needed here is intra-batch.
 foldReads
   :: TxState
   -> Int -> Int
@@ -581,15 +617,13 @@ foldReads st i n tvars results
       tvAny <- readSmallArrayIO tvars i
       valAny <- readSmallArrayIO results i
       let tv = anyToTVar tvAny
-      case logLookup tv (txLog st) of
+      case readLookup tv (txReads st) of
         Just _ -> foldReads st (i + 1) n tvars results
         Nothing -> do
           let val = coerceVal valAny
               st' = st
-                { txLog     = TxEntry tv val val : txLog st
-                , txLogLen  = txLogLen st + 1
-                , txWait    = WaitEntry tv val : txWait st
-                , txWaitLen = txWaitLen st + 1
+                { txReads    = ReadEntry tv val : txReads st
+                , txReadsLen = txReadsLen st + 1
                 }
           foldReads st' (i + 1) n tvars results
 
@@ -615,6 +649,30 @@ evalFragment st plan = case plan of
       Retry -> return (Retry, st')
       Raise e -> return (Raise e, st')
   _ -> evalSTM st plan  -- not actually a fragment; defensive fall-through
+
+-- Note [Discard writes, keep reads]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- 'orElse' (when the left branch retries) and 'catchSTM' (when the body throws)
+-- perform the *same* operation on the transaction state: discard the abandoned
+-- sub-computation's writes, but keep its reads.  With the read/write split this
+-- is two O(1) field updates — restore the entering 'txWrites', keep the (now
+-- larger) 'txReads' — so both arms share one shape:
+--
+--     evalSTM (st { txReads = txReads sub, txReadsLen = txReadsLen sub }) k
+--
+-- where @st@ is the entering state (its 'txWrites' is the rollback target) and
+-- @sub@ is the state after the abandoned branch\/body (its monotone 'txReads'
+-- already carries the union of the entering reads and the sub-computation's
+-- reads).  This mirrors legacy @merge_read_into@ (rts/STM.c): an aborted nested
+-- transaction's read set is merged into its parent so the parent stays validated
+-- and woken against the snapshot the retry\/throw was based on.
+--
+-- Legacy additionally re-records the *expected* value of each TVar the abandoned
+-- branch *wrote* as a parent read.  We drop those, and the difference is not
+-- observable: a discarded write can only influence the outcome through a value
+-- that was read, and every such read is a genuine read entry that we keep.  A
+-- write whose expected is never read back cannot change the result, so omitting
+-- it changes nothing a caller can detect (it only avoids some spurious retries).
 
 -----------------------------------------------------------------------------
 -- The interpreter.
@@ -655,14 +713,11 @@ evalSTM st plan = case plan of
         return (Ok a, stL)
       Raise e ->
         return (Raise e, stL)
-      Retry -> do
-        -- Roll the *log* (reads+writes) back to the entering state for the
-        -- right branch, but carry the *monotone wait set* forward: stL.txWait
-        -- already ⊇ the entering wait set plus the left branch's reads (we only
-        -- ever cons), so handing it to the right branch yields the union with
-        -- no diffing and no mid-flight registration.
-        let st1 = st { txWait = txWait stL, txWaitLen = txWaitLen stL }
-        evalSTM st1 right
+      Retry ->
+        -- Discard the left branch's writes (restore the entering 'txWrites'),
+        -- keep its reads (the monotone 'txReads' already carries the union), then
+        -- run the right branch.  See Note [Discard writes, keep reads].
+        evalSTM (st { txReads = txReads stL, txReadsLen = txReadsLen stL }) right
   SThrow e ->
     return (Raise e, st)
   SCatch body handler -> do
@@ -673,9 +728,12 @@ evalSTM st plan = case plan of
       -- a top-level retry waits on them.
       Retry -> return (Retry, stBody)
       Raise e ->
-        -- A caught exception forgets the body entirely: roll back *both* the
-        -- log and the wait set to the entering state, then run the handler.
-        evalSTM st (handler e)
+        -- A caught exception discards the body's writes (restore the entering
+        -- 'txWrites') but keeps its reads, so the enclosing transaction stays
+        -- validated/woken against the snapshot the throw was based on.  Same
+        -- shape as the orElse-retry arm; see Note [Discard writes, keep reads].
+        evalSTM (st { txReads = txReads stBody, txReadsLen = txReadsLen stBody })
+                (handler e)
   SUnsafeIO io ->
     catchSTMIO
       (do
@@ -739,20 +797,21 @@ runAtomically plan = go
       (outcome, st) <- evalSTM emptyTxState plan
       case outcome of
         Ok a -> do
-          success <- commitTxLog (txLog st) (txLogLen st)
+          success <- commitTx (txWrites st) (txWritesLen st)
+                              (txReads st) (txReadsLen st)
           if success
             then return a
             else go  -- commit conflict: stmCommitLog# already unlocked; restart
         Retry -> do
-          -- C-2: re-validate the (reads-only) wait set before committing to a
-          -- block.  An invalidated/zombie transaction (some logged read has
-          -- since changed) restarts immediately; only a genuinely-consistent
-          -- retry blocks on the union of every branch's reads.
-          consistent <- validateWaitSet (txWait st) (txWaitLen st)
+          -- C-2: re-validate the read set before committing to a block.  An
+          -- invalidated/zombie transaction (some logged read has since changed)
+          -- restarts immediately; only a genuinely-consistent retry blocks on
+          -- the union of every branch's reads.
+          consistent <- validateReads (txReads st) (txReadsLen st)
           if not consistent
             then go
             else do
-              registerWaitSet (txWait st) (txWaitLen st)
+              registerReads (txReads st) (txReadsLen st)
               blockOnRegisteredIO
               go
         Raise e -> do
@@ -893,7 +952,7 @@ commitSingleWrite tv val = loop
   where
     loop = do
       expected <- readTVarIO tv
-      success <- commitTxLog [TxEntry tv expected val] 1
+      success <- commitTx [WriteEntry tv expected val] 1 [] 0
       if success then return () else loop
 
 -- | Retry execution of the current memory transaction because it has seen
