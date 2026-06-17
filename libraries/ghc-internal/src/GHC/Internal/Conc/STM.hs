@@ -124,14 +124,21 @@ import GHC.Internal.IO.Exception ( FixIOException(..), BlockedIndefinitelyOnMVar
 
 -- | The executable plan that an @STM a@ denotes.  Control flow lives here;
 -- 'STMPrim' nodes are the leaves that actually touch 'TVar's.  'Applicative'
--- combination keeps a maximal effect-free \"fragment\" in 'SApp' (so its read
--- and write sets are statically enumerable — the precondition for 'readMany#'
--- batching); any 'Monad' sequencing or control-flow
--- combinator drops to the corresponding dedicated constructor.
+-- combination keeps a maximal effect-free \"fragment\" in 'SApp'\/'SFmap' (so its
+-- read and write sets are statically enumerable — the precondition for
+-- 'readMany#' batching); any 'Monad' sequencing or control-flow combinator drops
+-- to the corresponding dedicated constructor.
 data STMPlan a where
   SPure :: a -> STMPlan a
   SPrim :: STMPrim a -> STMPlan a
   SApp :: STMPlan (a -> b) -> STMPrim a -> STMPlan b
+  -- | A deferred 'fmap' over a sub-plan.  Holding the mapped function here makes
+  -- 'fmap'\/'planMap' O(1) instead of walking an 'SApp' spine down to its base to
+  -- compose the function — which is what stopped a programmatic applicative fold
+  -- (@f \<$\> acc \<*\> readTVar t@, repeated) from being O(n²) to build.  A pure
+  -- post-map preserves the fragment property, so 'fragmentReads' sees through it
+  -- and the read set stays statically enumerable for 'readMany#' batching.
+  SFmap :: (a -> b) -> STMPlan a -> STMPlan b
   SBind :: STMPlan a -> (a -> STMPlan b) -> STMPlan b
   SRetry :: STMPlan a
   SOrElse :: STMPlan a -> STMPlan a -> STMPlan a
@@ -149,24 +156,28 @@ newtype STM a = STM
   { stmPlan :: STMPlan a
   }
 
+-- | O(1) in every case.  A bare 'SPure' maps eagerly; a single primitive
+-- becomes a clean one-element 'SApp' fragment (so the single-read fast path and
+-- 'readMany#' batching keep matching it); nested maps fuse; everything else
+-- defers the function in an 'SFmap' rather than rebuilding the sub-plan.
+-- Deferring is what keeps an accumulating @f \<$\> acc@ from re-traversing — and
+-- re-allocating — the whole 'SApp' spine on every step (the old @SApp@ arm here
+-- was O(depth), making such folds O(n²)).
 planMap :: (a -> b) -> STMPlan a -> STMPlan b
 planMap f plan = case plan of
-  SPure a -> SPure (f a)
-  SPrim p -> SApp (SPure f) p
-  SApp pf px -> SApp (planMap (f .) pf) px
-  SBind p k -> SBind p (\a -> planMap f (k a))
-  SRetry -> SRetry
-  SOrElse l r -> SOrElse (planMap f l) (planMap f r)
-  SThrow e -> SThrow e
-  SCatch p h -> SCatch (planMap f p) (\e -> planMap f (h e))
-  SUnsafeIO io -> SBind (SUnsafeIO io) (\a -> SPure (f a))
-  SFix k -> SBind (SFix k) (\a -> SPure (f a))
+  SPure a   -> SPure (f a)
+  SPrim p   -> SApp (SPure f) p
+  SFmap g p -> SFmap (f . g) p
+  _         -> SFmap f plan
 
 planApply :: STMPlan (a -> b) -> STMPlan a -> STMPlan b
 planApply pf px = case px of
   SPure x -> planMap ($ x) pf
   SPrim p -> SApp pf p
   SApp inner p -> SApp (planApply (planMap (.) pf) inner) p
+  -- pf <*> (g <$> p) == (\f -> f . g) <$> pf <*> p.  Keeps the right operand's
+  -- fragment batchable without forcing its deferred map; 'planMap' here is O(1).
+  SFmap g p -> planApply (planMap (\f -> f . g) pf) p
   _ -> SBind pf (\f -> SBind px (\x -> SPure (f x)))
 
 -- The existential + 'unsafeCoerce#' in both entry types is inherent at this
@@ -555,6 +566,7 @@ fragmentReads = go []
     go acc (SApp pf p) = do
       acc' <- prim acc p
       go acc' pf
+    go acc (SFmap _ p) = go acc p
     go _ _ = Nothing
 
     prim :: [SomeTV] -> STMPrim b -> Maybe [SomeTV]
@@ -702,6 +714,15 @@ evalSTM st plan = case plan of
     case mb of
       Just res -> return res
       Nothing -> evalApp st plan
+  SFmap f p -> do
+    -- Evaluate the sub-plan (which may itself be a batchable 'SApp' fragment),
+    -- then apply the deferred map to a successful result.  Retry/Raise pass
+    -- through unmapped, exactly as the old eager 'planMap' arms did.
+    (outcome, st') <- evalSTM st p
+    case outcome of
+      Ok a -> return (Ok (f a), st')
+      Retry -> return (Retry, st')
+      Raise e -> return (Raise e, st')
   SBind p k -> do
     (outcome, st') <- evalSTM st p
     case outcome of
@@ -773,6 +794,14 @@ evalApp st plan = case plan of
     (a, st') <- evalPrim st p
     return (Ok a, st')
   SPure a -> return (Ok a, st)
+  -- Stay inside the fragment evaluator (recurse into 'evalApp', not 'evalSTM') so
+  -- a post-batch re-evaluation does not re-attempt 'readMany#'.
+  SFmap f p -> do
+    (outcome, st') <- evalApp st p
+    case outcome of
+      Ok a -> return (Ok (f a), st')
+      Retry -> return (Retry, st')
+      Raise e -> return (Raise e, st')
   _ -> evalSTM st plan
 
 -- | @mfix@ for STM.  Ties the knot inside the transaction, matching the legacy
