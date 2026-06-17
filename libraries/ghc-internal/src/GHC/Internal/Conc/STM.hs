@@ -23,15 +23,23 @@
 --
 -- STM implementation details.
 --
--- == The plan-based applicative STM, in brief
+-- == The CPS STM, in brief
 --
--- @STM a@ is an executable AST ('STMPlan'): @Applicative@ builds 'SApp'\/'SFmap'
--- nodes, @Monad@ sequencing builds 'SBind', and the control-flow
--- combinators ('retry', 'orElse', 'throwSTM', 'catchSTM', 'unsafeIOToSTM',
--- 'mfixSTM') each emit a dedicated node.  'atomically' interprets the
--- plan in @IO@ against an /immutable/ transaction log, yielding one of three
--- outcomes ('STMOutcome': @Ok@, @Retry@, @Raise@), then commits/blocks/rethrows
--- against the RTS.
+-- @STM a@ is a continuation-passing computation, not an interpreted AST: it is a
+-- function that takes the entering transaction state plus three continuations —
+-- success, @retry@, and @throw@ — and invokes exactly one of them with the
+-- resulting state (see 'STM').  '>>=' and '<*>' are plain closure compositions
+-- that thread the state and pass @retry@\/@throw@ through; 'orElse'\/'catchSTM'
+-- install a replacement @retry@\/@throw@ continuation that restores the entering
+-- writes and keeps the reads (O(1) rollback, no exceptions); 'unsafeIOToSTM'
+-- runs its 'IO' and routes a thrown exception into the @throw@ continuation;
+-- 'mfixSTM' ties the knot with explicit black-holing.  'atomically' runs the
+-- computation against an /immutable/ transaction log with continuations that
+-- commit, block, or rethrow against the RTS.
+--
+-- There is no per-step outcome box and no interpreted-node allocation: '>>='
+-- allocates ~one closure, and the only other per-op boxing is the immutable
+-- cons-front log entries themselves.
 --
 -- == The log, split by access kind
 --
@@ -52,11 +60,11 @@
 -- Splitting by access kind is what makes the control-flow combinators cheap and
 -- uniform.  'orElse' (left retries) and 'catchSTM' (body throws) both reduce to
 -- /restore the entering writes, keep the monotone reads/ — two O(1) field
--- updates, no diffing, no spine rebuild (see Note [Discard writes, keep reads]).
--- It is also why registration happens exactly once at the top (no mid-flight
--- register\/clear churn, no @RetryWithWait@ outcome, no @differenceTxLog@): the
--- monotone read set already holds the union of every branch's reads, so nothing
--- registers until the whole transaction retries.
+-- updates ('keepReads'), no diffing, no spine rebuild (see Note [Discard writes,
+-- keep reads]).  It is also why registration happens exactly once at the top (no
+-- mid-flight register\/clear churn, no @RetryWithWait@ outcome, no
+-- @differenceTxLog@): the monotone read set already holds the union of every
+-- branch's reads, so nothing registers until the whole transaction retries.
 --
 -- Both lists insert by /consing to the front/ (O(1), no spine rebuild) and look
 -- up by /first match/; de-duplication is deferred to the single commit
@@ -66,12 +74,12 @@
 -- == Validation
 --
 -- Reads are taken from live memory at access time, so between two reads the
--- interpreter can be running arbitrary user code over a mutually-inconsistent
+-- computation can be running arbitrary user code over a mutually-inconsistent
 -- snapshot.  'validateTx' is a 'readTVarIO' pointer-equality walk over
--- 'txReads'.  It is always used at the top-level @Retry@ boundary; 'SBind'
--- uses 'validateForBind' to validate only reads added since the previous
+-- 'txReads'.  It is always used at the top-level @retry@ boundary; the monadic
+-- '>>=' uses 'validateForBind' to validate only reads added since the previous
 -- advisory checkpoint.  A mid-flight mismatch abandons the current attempt as a
--- @Retry@; 'runAtomically' re-validates the read set before blocking, so an
+-- @retry@; 'atomically' re-validates the read set before blocking, so an
 -- invalidated (\"zombie\") transaction restarts immediately instead of blocking,
 -- while a genuine @retry@ blocks.  Commit-time validation in 'stmCommitLog#' is
 -- the correctness backstop.  Not re-checking old reads at every advisory
@@ -109,9 +117,9 @@ import GHC.Internal.Prim
 import GHC.Internal.Types ( IO(..), Bool(..), Int(..), Any, isTrue# )
 import GHC.Internal.Classes ( Eq(..), Ord(..), not )
 import GHC.Internal.Maybe ( Maybe(..) )
--- Explicit black-holing for SFix (mfix), reusing the fixIO/fixST shape.  These
+-- Explicit black-holing for 'mfixSTM', reusing the fixIO/fixST shape.  These
 -- modules sit below Conc.STM in the import graph (none depend on it), so there
--- is no cycle.  See 'evalFix'.
+-- is no cycle.  'catch'/'throwIO' also serve 'unsafeIOToSTM' (see 'tryIO').
 import GHC.Internal.IO ( catch, throwIO )
 import GHC.Internal.MVar ( newEmptyMVar, readMVar, putMVar )
 import GHC.Internal.IO.Unsafe ( unsafeDupableInterleaveIO )
@@ -124,60 +132,23 @@ import GHC.Internal.IO.Exception ( FixIOException(..), BlockedIndefinitelyOnMVar
 -- TVars are shared memory locations which support atomic memory
 -- transactions.
 
--- | The executable plan that an @STM a@ denotes.  Control flow lives here;
--- 'STMPrim' nodes are the leaves that actually touch 'TVar's.  'Applicative'
--- combination accumulates primitives in an 'SApp'\/'SFmap' spine; any 'Monad'
--- sequencing or control-flow combinator drops to the corresponding dedicated
--- constructor.
-data STMPlan a where
-  SPure :: a -> STMPlan a
-  SPrim :: STMPrim a -> STMPlan a
-  SApp :: STMPlan (a -> b) -> STMPrim a -> STMPlan b
-  -- | A deferred 'fmap' over a sub-plan.  Holding the mapped function here makes
-  -- 'fmap'\/'planMap' O(1) instead of walking an 'SApp' spine down to its base to
-  -- compose the function — which is what stopped a programmatic applicative fold
-  -- (@f \<$\> acc \<*\> readTVar t@, repeated) from being O(n²) to build.
-  SFmap :: (a -> b) -> STMPlan a -> STMPlan b
-  SBind :: STMPlan a -> (a -> STMPlan b) -> STMPlan b
-  SRetry :: STMPlan a
-  SOrElse :: STMPlan a -> STMPlan a -> STMPlan a
-  SThrow :: SomeException -> STMPlan a
-  SCatch :: STMPlan a -> (SomeException -> STMPlan a) -> STMPlan a
-  SUnsafeIO :: IO a -> STMPlan a
-  SFix :: (a -> STMPlan a) -> STMPlan a
+-- | The success continuation: a result @a@ with the (post-effect) state.
+type OkK a r = TxState -> a -> IO r
+-- | The @retry@ continuation: carries the state whose read set is the wait set.
+type RetryK r = TxState -> IO r
+-- | The @throw@ continuation: carries the state (its reads are merged by an
+-- enclosing 'catchSTM') and the exception.
+type RaiseK r = TxState -> SomeException -> IO r
 
-data STMPrim a where
-  PRead :: TVar a -> STMPrim a
-  PWrite :: TVar a -> a -> STMPrim ()
-  PNewTVar :: a -> STMPrim (TVar a)
-
+-- | @STM a@ in continuation-passing style.  Given the entering transaction state
+-- and three continuations — success ('OkK'), @retry@ ('RetryK'), and @throw@
+-- ('RaiseK') — an @STM a@ threads the state through its effects and invokes
+-- exactly one continuation.  There is no intermediate AST or per-step outcome
+-- box: '>>='\/'<*>' are plain closure compositions, 'orElse'\/'catchSTM' install
+-- a replacement @retry@\/@throw@ continuation (O(1) rollback, no exceptions), and
+-- the immutable cons-front log ('TxState') is carried as the first argument.
 newtype STM a = STM
-  { stmPlan :: STMPlan a
-  }
-
--- | O(1) in every case.  A bare 'SPure' maps eagerly; a single primitive
--- becomes a clean one-element 'SApp' (so the single-read fast path keeps
--- matching it); nested maps fuse; everything else defers the function in an
--- 'SFmap' rather than rebuilding the sub-plan.
--- Deferring is what keeps an accumulating @f \<$\> acc@ from re-traversing — and
--- re-allocating — the whole 'SApp' spine on every step (the old @SApp@ arm here
--- was O(depth), making such folds O(n²)).
-planMap :: (a -> b) -> STMPlan a -> STMPlan b
-planMap f plan = case plan of
-  SPure a   -> SPure (f a)
-  SPrim p   -> SApp (SPure f) p
-  SFmap g p -> SFmap (f . g) p
-  _         -> SFmap f plan
-
-planApply :: STMPlan (a -> b) -> STMPlan a -> STMPlan b
-planApply pf px = case px of
-  SPure x -> planMap ($ x) pf
-  SPrim p -> SApp pf p
-  SApp inner p -> SApp (planApply (planMap (.) pf) inner) p
-  -- pf <*> (g <$> p) == (\f -> f . g) <$> pf <*> p.  Pushes the deferred map into
-  -- the function side without forcing it; 'planMap' here is O(1).
-  SFmap g p -> planApply (planMap (\f -> f . g) pf) p
-  _ -> SBind pf (\f -> SBind px (\x -> SPure (f x)))
+  { runSTM :: forall r. TxState -> OkK a r -> RetryK r -> RaiseK r -> IO r }
 
 -- The existential + 'unsafeCoerce#' in both entry types is inherent at this
 -- layer (below @containers@): a heterogeneous @TVar a -> ...@ map cannot be
@@ -205,7 +176,7 @@ data ReadEntry where
 type WriteSet = [WriteEntry]
 type ReadSet  = [ReadEntry]
 
--- | The transaction state threaded through the interpreter.  The log is split
+-- | The transaction state threaded through the computation.  The log is split
 -- by access kind into two immutable cons-front lists (see the module header),
 -- each with an incrementally-tracked length so marshalling needs no @length@
 -- pass.  The split is what makes 'orElse' and 'catchSTM' O(1): both keep the
@@ -219,11 +190,6 @@ data TxState = TxState
   , txWrites    :: WriteSet  -- speculative writes; rolled back by orElse and catchSTM
   , txWritesLen :: !Int      -- length of txWrites (upper bound; pre-dedup)
   }
-
--- The three-outcome model (Ok | Retry | Raise).  A mid-flight validation
--- failure is reported as Retry; runAtomically re-validates before blocking, so
--- an invalidated transaction restarts immediately rather than blocking.
-data STMOutcome a = Ok a | Retry | Raise SomeException
 
 emptyTxState :: TxState
 emptyTxState = TxState [] 0 0 [] 0
@@ -276,12 +242,6 @@ atomicallyIO (IO m) = stateToIO (atomically# m)
 raiseIOIO :: SomeException -> IO a
 raiseIOIO e = stateToIO (raiseIO# e)
 {-# INLINE raiseIOIO #-}
-
-catchSTMIO :: IO a -> (SomeException -> IO a) -> IO a
-catchSTMIO (IO m) handler =
-  stateToIO $ \s0 ->
-    catch# m (\e s -> case handler (unsafeCoerce# e) of IO m' -> m' s) s0
-{-# INLINE catchSTMIO #-}
 
 blockOnRegisteredIO :: IO ()
 blockOnRegisteredIO = stateToIO_ $ \s0 ->
@@ -435,7 +395,7 @@ registerReads reads lenHint = do
 -- its 'TVar''s current value.  Walks the read set directly with 'readTVarIO' +
 -- 'reallyUnsafePtrEquality#' — NO array marshalling, so it allocates nothing.
 -- The old path re-marshalled the whole (growing) read set into fresh arrays for
--- 'validate#' on /every/ 'SBind' (C-2), which is O(n²) allocation over a large
+-- 'validate#' on /every/ bind (C-2), which is O(n²) allocation over a large
 -- transaction; this is the single biggest allocation sink for long monadic txns.
 --
 -- Correctness vs the old lock-free 'validate#': 'readTVarIO#' spins past a commit
@@ -479,14 +439,14 @@ validateReadEntry (ReadEntry tv expected) = do
   return (isTrue# (reallyUnsafePtrEquality# cur expected))
 
 -- | Validate the entire current transaction's read set.  Used before committing
--- to a block in 'runAtomically'; 'validateForBind' handles advisory mid-flight
+-- to a block in 'atomically'; 'validateForBind' handles advisory mid-flight
 -- checkpoints.  'True' if still consistent.
 validateTx :: TxState -> IO Bool
 validateTx st = validateReads (txReads st)
 
--- | Advisory mid-flight validation before an 'SBind' continuation.  Only reads
--- added since the previous checkpoint are checked here.  Older reads are still
--- validated before blocking and by 'stmCommitLog#' under lock before any
+-- | Advisory mid-flight validation before a monadic '>>=' continuation.  Only
+-- reads added since the previous checkpoint are checked here.  Older reads are
+-- still validated before blocking and by 'stmCommitLog#' under lock before any
 -- successful commit.  Skipping their repeated mid-flight checks weakens only
 -- early zombie detection: code may run longer on an obsolete snapshot, but it
 -- cannot successfully commit or block until the full read set is checked.
@@ -553,15 +513,16 @@ writeTVarTx st tv val = do
       Nothing -> readTVarIO tv                          -- first touch: read live
   return (logWrite tv expected val st)
 
-evalPrim :: TxState -> STMPrim a -> IO (a, TxState)
-evalPrim st prim = case prim of
-  PRead tv -> readTVarTx st tv
-  PWrite tv val -> do
-    st' <- writeTVarTx st tv val
-    return ((), st')
-  PNewTVar val -> do
-    tv <- newTVarIO val
-    return (tv, st)
+-- | Restore @entering@'s speculative writes while keeping @sub@'s monotone
+-- reads.  The single rollback operation shared by 'orElse' (left retried) and
+-- 'catchSTM' (body threw); see Note [Discard writes, keep reads].
+keepReads :: TxState -> TxState -> TxState
+keepReads entering sub = entering
+  { txReads = txReads sub
+  , txReadsLen = txReadsLen sub
+  , txCheckedReadsLen = txCheckedReadsLen sub
+  }
+{-# INLINE keepReads #-}
 
 -- Note [Discard writes, keep reads]
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -569,17 +530,17 @@ evalPrim st prim = case prim of
 -- perform the *same* operation on the transaction state: discard the abandoned
 -- sub-computation's writes, but keep its reads.  With the read/write split this
 -- is two O(1) field updates — restore the entering 'txWrites', keep the (now
--- larger) 'txReads' — so both arms share one shape:
+-- larger) 'txReads' — captured once in 'keepReads':
 --
---     evalSTM (st { txReads = txReads sub, txReadsLen = txReadsLen sub
---                  , txCheckedReadsLen = txCheckedReadsLen sub }) k
+--     keepReads entering sub
 --
--- where @st@ is the entering state (its 'txWrites' is the rollback target) and
--- @sub@ is the state after the abandoned branch\/body (its monotone 'txReads'
--- already carries the union of the entering reads and the sub-computation's
--- reads).  This mirrors legacy @merge_read_into@ (rts/STM.c): an aborted nested
--- transaction's read set is merged into its parent so the parent stays validated
--- and woken against the snapshot the retry\/throw was based on.
+-- where @entering@ is the state on entry (its 'txWrites' is the rollback target)
+-- and @sub@ is the state the abandoned branch\/body invoked its retry\/raise
+-- continuation with (its monotone 'txReads' already carries the union of the
+-- entering reads and the sub-computation's reads).  This mirrors legacy
+-- @merge_read_into@ (rts/STM.c): an aborted nested transaction's read set is
+-- merged into its parent so the parent stays validated and woken against the
+-- snapshot the retry\/throw was based on.
 --
 -- Legacy additionally re-records the *expected* value of each TVar the abandoned
 -- branch *wrote* as a parent read.  We drop those, and the difference is not
@@ -588,188 +549,70 @@ evalPrim st prim = case prim of
 -- write whose expected is never read back cannot change the result, so omitting
 -- it changes nothing a caller can detect (it only avoids some spurious retries).
 
--- Note [Which TxState flows out of each outcome]
--- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
--- Every 'evalSTM' arm returns @(outcome, st)@.  The 'TxState' that flows out is
--- NOT always discarded — its 'txReads' is consumed even on the non-Ok outcomes,
--- so arms must thread the post-evaluation state, not the entering one:
+-- Note [Which TxState flows to each continuation]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- Every combinator invokes one of three continuations with a 'TxState'.  The
+-- state carried is the POST-effect state (its 'txReads' is consumed even on the
+-- non-success continuations), so combinators thread the accumulated state, not
+-- the entering one:
 --
---   * Ok    — full state committed: 'txWrites' applied, 'txReads' validated.
---   * Retry — 'txReads' is the wait set.  An enclosing 'orElse' carries it
---             forward into the sibling branch; at the top level 'runAtomically'
---             registers it.  'txWrites' is irrelevant (rolled back / unused).
---   * Raise — 'txReads' is merged by an enclosing 'catchSTM' (the body's reads
+--   * ok    — full state to commit: 'txWrites' applied, 'txReads' validated.
+--   * retry — 'txReads' is the wait set.  An enclosing 'orElse' carries it into
+--             the sibling branch; at the top level 'atomically' registers it.
+--             'txWrites' is irrelevant (rolled back / unused).
+--   * raise — 'txReads' is merged by an enclosing 'catchSTM' (the body's reads
 --             keep the handler validated against the throw's snapshot); at the
 --             top level it is discarded by 'raiseIOIO'.  'txWrites' is discarded.
 --
--- Consequence: 'evalFix' returns @st'@ (post-body) on /every/ arm, because a
--- @mfix@ body that reads TVars and then retries\/throws must surface those reads
--- to the enclosing 'orElse'\/'catchSTM'.  'SUnsafeIO' returns @st@ on Raise only
--- because pure-IO bodies add no reads (so @st == st'@ there).
+-- 'orElse'\/'catchSTM' install a replacement retry\/raise continuation that
+-- 'keepReads' (restore entering writes, keep the abandoned branch's reads)
+-- before running the sibling\/handler.  'mfixSTM' passes the body's accumulated
+-- state through on /every/ continuation, so a @mfix@ body that reads TVars and
+-- then retries\/throws surfaces those reads to the enclosing 'orElse'\/'catchSTM'.
 
 -----------------------------------------------------------------------------
--- The interpreter.
------------------------------------------------------------------------------
-
-evalSTM :: TxState -> STMPlan a -> IO (STMOutcome a, TxState)
-evalSTM st plan = case plan of
-  SPure a -> return (Ok a, st)
-  SPrim p -> do
-    (a, st') <- evalPrim st p
-    return (Ok a, st')
-  SApp pf px -> do
-    -- Walk the applicative spine left-to-right, threading the log: evaluate the
-    -- function side, then the trailing primitive ('readTVarTx'\/'writeTVarTx'),
-    -- and apply.  Retry/Raise short-circuit the rest of the spine.
-    (outcome, st') <- evalSTM st pf
-    case outcome of
-      Ok f -> do
-        (x, st'') <- evalPrim st' px
-        return (Ok (f x), st'')
-      Retry -> return (Retry, st')
-      Raise e -> return (Raise e, st')
-  SFmap f p -> do
-    -- Evaluate the sub-plan (which may itself be an 'SApp' spine), then apply
-    -- the deferred map to a successful result.  Retry/Raise pass
-    -- through unmapped, exactly as the old eager 'planMap' arms did.
-    (outcome, st') <- evalSTM st p
-    case outcome of
-      Ok a -> return (Ok (f a), st')
-      Retry -> return (Retry, st')
-      Raise e -> return (Raise e, st')
-  SBind p k -> do
-    (outcome, st') <- evalSTM st p
-    case outcome of
-      Ok a -> do
-        -- C-2: validate newly-added reads before running the (arbitrary,
-        -- potentially-divergent) continuation.  A stale snapshot abandons the
-        -- attempt as Retry; runAtomically re-validates and restarts immediately.
-        (consistent, st'') <- validateForBind st'
-        if consistent
-          then evalSTM st'' (k a)
-          else return (Retry, st'')
-      Retry -> return (Retry, st')
-      Raise e -> return (Raise e, st')
-  SRetry ->
-    return (Retry, st)
-  SOrElse left right -> do
-    (outcomeL, stL) <- evalSTM st left
-    case outcomeL of
-      Ok a ->
-        return (Ok a, stL)
-      Raise e ->
-        return (Raise e, stL)
-      Retry ->
-        -- Discard the left branch's writes (restore the entering 'txWrites'),
-        -- keep its reads (the monotone 'txReads' already carries the union), then
-        -- run the right branch.  See Note [Discard writes, keep reads].
-        evalSTM (st { txReads = txReads stL
-                    , txReadsLen = txReadsLen stL
-                    , txCheckedReadsLen = txCheckedReadsLen stL }) right
-  SThrow e ->
-    return (Raise e, st)
-  SCatch body handler -> do
-    (outcome, stBody) <- evalSTM st body
-    case outcome of
-      Ok a -> return (Ok a, stBody)
-      -- retry is not caught (legacy); the body's reads stay in the wait set so
-      -- a top-level retry waits on them.
-      Retry -> return (Retry, stBody)
-      Raise e ->
-        -- A caught exception discards the body's writes (restore the entering
-        -- 'txWrites') but keeps its reads, so the enclosing transaction stays
-        -- validated/woken against the snapshot the throw was based on.  Same
-        -- shape as the orElse-retry arm; see Note [Discard writes, keep reads].
-        evalSTM (st { txReads = txReads stBody
-                    , txReadsLen = txReadsLen stBody
-                    , txCheckedReadsLen = txCheckedReadsLen stBody })
-                (handler e)
-  SUnsafeIO io ->
-    catchSTMIO
-      (do
-        a <- io
-        return (Ok a, st))
-      (\e -> return (Raise e, st))
-  SFix k -> evalFix st k
-
--- | @mfix@ for STM.  Ties the knot inside the transaction, matching the legacy
--- @MonadFix STM@ semantics, but with /explicit/ black-holing (an MVar-free
--- analogue is impossible here, so we reuse the 'fixIO'\/'fixST' shape) rather
--- than the lazy @State#@ knot the old instance used.  The lazy knot is exactly
--- what @fixST@ abandoned in #15349: lazy black-holing can /re-run/ the
--- effectful body and duplicate its reads\/writes.  Here the body is interpreted
--- exactly once; the fixed-point value is forced lazily and, if demanded before
--- the body yields @Ok@, diverges into the black hole (raising
--- 'FixIOException'), preserving the legacy \"forcing diverges\" contract for
--- @retry@\/@throw@ outcomes.  See "GHC.Internal.Control.Monad.ST.Imp".
-evalFix :: TxState -> (a -> STMPlan a) -> IO (STMOutcome a, TxState)
-evalFix st k = do
-  m <- newEmptyMVar
-  ans <- unsafeDupableInterleaveIO
-           (readMVar m `catch` \BlockedIndefinitelyOnMVar -> throwIO FixIOException)
-  (out, st') <- evalSTM st (k ans)
-  case out of
-    Ok a -> do
-      putMVar m a
-      return (Ok a, st')
-    Retry ->
-      -- Leave m empty: forcing `ans` blocks indefinitely, the runtime detects
-      -- the deadlock (BlockedIndefinitelyOnMVar) and we re-raise it as the
-      -- standard 'FixIOException'.  This matches the legacy 'mfix' contract that
-      -- a non-Ok body leaves the fixed point black-holed (forcing it diverges),
-      -- but without the lazy-State#-knot re-run hazard of #15349.
-      return (Retry, st')
-    Raise e ->
-      return (Raise e, st')
-
-runAtomically :: STMPlan a -> IO a
-runAtomically plan = go
-  where
-    go = do
-      (outcome, st) <- evalSTM emptyTxState plan
-      case outcome of
-        Ok a -> do
-          success <- commitTx (txWrites st) (txWritesLen st)
-                              (txReads st) (txReadsLen st)
-          if success
-            then return a
-            else go  -- commit conflict: stmCommitLog# already unlocked; restart
-        Retry -> do
-          -- C-2: re-validate the read set before committing to a block.  An
-          -- invalidated/zombie transaction (some logged read has since changed)
-          -- restarts immediately; only a genuinely-consistent retry blocks on
-          -- the union of every branch's reads.
-          consistent <- validateTx st
-          if not consistent
-            then go
-            else do
-              registerReads (txReads st) (txReadsLen st)
-              blockOnRegisteredIO
-              go
-        Raise e -> do
-          raiseIOIO e
-
------------------------------------------------------------------------------
--- MVar / interleave plumbing for evalFix (explicit black-holing, fixIO-style).
--- Imported directly to keep the module's low position in the import graph;
--- GHC.Internal.MVar / .IO.Unsafe / .IO.Exception do not depend on Conc.STM.
+-- Instances.
 -----------------------------------------------------------------------------
 
 instance Functor STM where
-   fmap f (STM plan) = STM (planMap f plan)
+  fmap f (STM m) = STM $ \st ok retryK raise ->
+    m st (\st' a -> ok st' (f a)) retryK raise
+  {-# INLINE fmap #-}
 
 -- | @since base-4.8.0.0
 instance Applicative STM where
   {-# INLINE pure #-}
+  {-# INLINE (<*>) #-}
   {-# INLINE liftA2 #-}
-  pure x = returnSTM x
-  STM pf <*> STM px = STM (planApply pf px)
-  liftA2 f x y = pure f <*> x <*> y
+  {-# INLINE (*>) #-}
+  {-# INLINE (<*) #-}
+  pure x = STM $ \st ok _ _ -> ok st x
+  -- Run both effects in sequence with no spine: this is what makes
+  -- 'traverse'\/'mapM'\/'sequenceA' over 'readTVar' O(n) instead of O(n²).
+  STM mf <*> STM mx = STM $ \st ok retryK raise ->
+    mf st (\st' f -> mx st' (\st'' x -> ok st'' (f x)) retryK raise) retryK raise
+  liftA2 f (STM mx) (STM my) = STM $ \st ok retryK raise ->
+    mx st (\st' x -> my st' (\st'' y -> ok st'' (f x y)) retryK raise) retryK raise
+  STM ma *> STM mb = STM $ \st ok retryK raise ->
+    ma st (\st' _ -> mb st' ok retryK raise) retryK raise
+  STM ma <* STM mb = STM $ \st ok retryK raise ->
+    ma st (\st' a -> mb st' (\st'' _ -> ok st'' a) retryK raise) retryK raise
 
 -- | @since base-4.3.0.0
 instance  Monad STM  where
-    {-# INLINE (>>=)  #-}
-    m >>= k     = bindSTM m k
+    {-# INLINE (>>=) #-}
+    -- After the left side succeeds, validate the reads added since the previous
+    -- checkpoint (C-2) before running the arbitrary, possibly-divergent
+    -- continuation.  A stale snapshot abandons the attempt via the @retry@
+    -- continuation; 'atomically' re-validates and restarts immediately.
+    STM m >>= k = STM $ \st ok retryK raise ->
+      m st
+        (\st' a -> do
+            (consistent, st'') <- validateForBind st'
+            if consistent
+              then runSTM (k a) st'' ok retryK raise
+              else retryK st'')
+        retryK raise
     (>>) = (*>)
 
 -- | @since base-4.17.0.0
@@ -780,14 +623,30 @@ instance Semigroup a => Semigroup (STM a) where
 instance Monoid a => Monoid (STM a) where
     mempty = pure mempty
 
-bindSTM :: STM a -> (a -> STM b) -> STM b
-bindSTM (STM plan) k = STM (SBind plan (\a -> stmPlan (k a)))
-
-returnSTM :: a -> STM a
-returnSTM x = STM (SPure x)
-
+-- | @mfix@ for STM.  Ties the knot inside the transaction, matching the legacy
+-- @MonadFix STM@ semantics, but with /explicit/ black-holing (an MVar-free
+-- analogue is impossible here, so we reuse the 'fixIO'\/'fixST' shape) rather
+-- than the lazy @State#@ knot the old instance used.  The lazy knot is exactly
+-- what @fixST@ abandoned in #15349: lazy black-holing can /re-run/ the
+-- effectful body and duplicate its reads\/writes.  Here the body is run exactly
+-- once; the fixed-point value is forced lazily and, if demanded before the body
+-- yields success, diverges into the black hole (raising 'FixIOException'),
+-- preserving the legacy \"forcing diverges\" contract for @retry@\/@throw@
+-- outcomes.  See "GHC.Internal.Control.Monad.ST.Imp".
 mfixSTM :: (a -> STM a) -> STM a
-mfixSTM k = STM (SFix (\a -> stmPlan (k a)))
+mfixSTM k = STM $ \st ok retryK raise -> do
+  m <- newEmptyMVar
+  ans <- unsafeDupableInterleaveIO
+           (readMVar m `catch` \BlockedIndefinitelyOnMVar -> throwIO FixIOException)
+  runSTM (k ans) st
+    -- success: publish the fixed point, then continue.
+    (\st' a -> do putMVar m a; ok st' a)
+    -- retry/raise: leave m empty, so forcing `ans` blocks indefinitely; the
+    -- runtime detects the deadlock (BlockedIndefinitelyOnMVar) and we re-raise
+    -- it as the standard 'FixIOException'.  Matches the legacy 'mfix' contract
+    -- without the lazy-State#-knot re-run hazard of #15349.
+    retryK
+    raise
 {-# INLINE mfixSTM #-}
 
 -- | Takes the first non-'retry'ing 'STM' action.
@@ -823,7 +682,15 @@ instance MonadPlus STM
 --     to the programmer, but using `unsafeIOToSTM` can expose it.
 --
 unsafeIOToSTM :: IO a -> STM a
-unsafeIOToSTM io = STM (SUnsafeIO io)
+unsafeIOToSTM io = STM $ \st ok _ raise -> do
+  -- Run only the embedded IO under 'catch'; build (but do not run) the chosen
+  -- continuation, then run it OUTSIDE the catch so the rest of the transaction
+  -- is not swallowed by this handler.  Only the action's own exceptions are
+  -- caught (its result is not forced), matching the legacy behaviour.
+  next <- catch (do a <- io
+                    return (ok st a))
+                (\e -> return (raise st e))
+  next
 
 -- | Perform a series of STM actions atomically.
 --
@@ -848,44 +715,37 @@ unsafeIOToSTM io = STM (SUnsafeIO io)
 -- different reasons. See 'unsafeIOToSTM' for more on this.
 
 atomically :: STM a -> IO a
-atomically (STM plan) =
-  case fastPath plan of
-    Just action -> atomicallyIO action
-    Nothing -> atomicallyIO (runAtomically plan)
-  where
-    fastPath p = case p of
-      SPure a -> Just (return a)
-      SThrow e -> Just (raiseIOIO e)
-      SPrim prim -> fastPrim id prim
-      SApp (SPure f) prim -> fastPrim f prim
-      _ -> Nothing
+atomically (STM m) = atomicallyIO (runAtomicallyCPS m)
 
-    fastPrim :: (a -> b) -> STMPrim a -> Maybe (IO b)
-    fastPrim f prim = case prim of
-      PRead (TVar tvar#) ->
-        Just (do
-          a <- readTVarIO (TVar tvar#)
-          return (f a))
-      PNewTVar val ->
-        Just (do
-          tvar <- newTVarIO val
-          return (f tvar))
-      PWrite tv val ->
-        -- M-3: a lone single-TVar write is the most common trivial transaction
-        -- (counters, flags, TMVar puts).  Commit it directly through the log
-        -- machinery (one entry → one-element arrays → stmCommitLog#), retrying
-        -- on conflict, with no spine walk or separate sort step.
-        Just (fmap f (commitSingleWrite tv val))
-
--- | Commit a single @writeTVar@ as its own one-entry transaction, looping on
--- commit conflict.  Reads the current value for @expected@ on each attempt.
-commitSingleWrite :: TVar a -> a -> IO ()
-commitSingleWrite tv val = loop
+-- | Drive a CPS transaction against the RTS: run it from an empty log with
+-- continuations that commit (on success), validate-and-block or restart (on
+-- @retry@), or rethrow (on @throw@).  @go@ is the restart loop, shared by a
+-- commit conflict and a zombie @retry@.  There is no per-attempt outcome box:
+-- the continuations drive the RTS directly and recurse into @go@ to restart.
+runAtomicallyCPS
+  :: (forall r. TxState -> OkK a r -> RetryK r -> RaiseK r -> IO r) -> IO a
+runAtomicallyCPS m = go
   where
-    loop = do
-      expected <- readTVarIO tv
-      success <- commitTx [WriteEntry tv expected val] 1 [] 0
-      if success then return () else loop
+    go = m emptyTxState onOk onRetry onRaise
+    onOk st a = do
+      success <- commitTx (txWrites st) (txWritesLen st)
+                          (txReads st) (txReadsLen st)
+      if success
+        then return a
+        else go  -- commit conflict: stmCommitLog# already unlocked; restart
+    onRetry st = do
+      -- C-2: re-validate the read set before committing to a block.  An
+      -- invalidated/zombie transaction (some logged read has since changed)
+      -- restarts immediately; only a genuinely-consistent retry blocks on the
+      -- union of every branch's reads.
+      consistent <- validateTx st
+      if not consistent
+        then go
+        else do
+          registerReads (txReads st) (txReadsLen st)
+          blockOnRegisteredIO
+          go
+    onRaise _ e = raiseIOIO e
 
 -- | Retry execution of the current memory transaction because it has seen
 -- values in 'TVar's which mean that it should not continue (e.g. the 'TVar's
@@ -893,7 +753,7 @@ commitSingleWrite tv val = loop
 -- block the thread until one of the 'TVar's that it has read from has been
 -- updated. (GHC only)
 retry :: STM a
-retry = STM SRetry
+retry = STM $ \st _ retryK _ -> retryK st
 
 -- | Compose two alternative STM actions (GHC only).
 --
@@ -902,7 +762,11 @@ retry = STM SRetry
 -- is tried in its place. If both actions retry then the 'orElse' as a whole
 -- retries.
 orElse :: STM a -> STM a -> STM a
-orElse (STM planA) (STM planB) = STM (SOrElse planA planB)
+orElse (STM ma) (STM mb) = STM $ \st ok retryK raise ->
+  -- Success/throw of the left branch pass straight through (carrying the left's
+  -- accumulated state).  A left @retry@ runs the right branch with the left's
+  -- writes discarded and reads kept; see Note [Discard writes, keep reads].
+  ma st ok (\stL -> mb (keepReads st stL) ok retryK raise) raise
 
 -- | A variant of 'throw' that can only be used within the 'STM' monad.
 --
@@ -930,7 +794,7 @@ orElse (STM planA) (STM planB) = STM (SOrElse planA planB)
 throwSTM :: Exception e => e -> STM a
 throwSTM e =
   let ex = toException e
-  in STM (SThrow ex)
+  in STM $ \st _ _ raise -> raise st ex
 
 -- | Exception handling within STM actions.
 --
@@ -939,12 +803,15 @@ throwSTM e =
 -- thrown, any changes made by @m@ are rolled back, but changes prior to
 -- @m@ persist.
 catchSTM :: Exception e => STM a -> (e -> STM a) -> STM a
-catchSTM (STM plan) handler = STM plan'
-  where
-    plan' = SCatch plan handlerPlan
-    handlerPlan e = case fromException e of
-      Just e' -> stmPlan (handler e')
-      Nothing -> SThrow e
+catchSTM (STM body) handler = STM $ \st ok retryK raise ->
+  -- Success and @retry@ of the body pass through (a retry is not caught; the
+  -- body's reads stay in the wait set).  On @throw@, if the exception matches
+  -- the handler's type, run the handler with the body's writes discarded and
+  -- reads kept; otherwise rethrow.  See Note [Discard writes, keep reads].
+  body st ok retryK
+    (\stBody e -> case fromException e of
+        Just e' -> runSTM (handler e') (keepReads st stBody) ok retryK raise
+        Nothing -> raise stBody e)
 
 -- |Shared memory locations that support atomic memory transactions.
 data TVar a = TVar (TVar# RealWorld a)
@@ -955,7 +822,9 @@ instance Eq (TVar a) where
 
 -- | Create a new 'TVar' holding a value supplied
 newTVar :: a -> STM (TVar a)
-newTVar val = STM (SPrim (PNewTVar val))
+newTVar val = STM $ \st ok _ _ -> do
+  tv <- newTVarIO val
+  ok st tv
 
 -- | @IO@ version of 'newTVar'.  This is useful for creating top-level
 -- 'TVar's using 'System.IO.Unsafe.unsafePerformIO', because using
@@ -978,8 +847,12 @@ readTVarIO (TVar tvar#) = stateToIO (readTVarIO# tvar#)
 
 -- |Return the current value stored in a 'TVar'.
 readTVar :: TVar a -> STM a
-readTVar tv = STM (SPrim (PRead tv))
+readTVar tv = STM $ \st ok _ _ -> do
+  (a, st') <- readTVarTx st tv
+  ok st' a
 
 -- |Write the supplied value into a 'TVar'.
 writeTVar :: TVar a -> a -> STM ()
-writeTVar tv val = STM (SPrim (PWrite tv val))
+writeTVar tv val = STM $ \st ok _ _ -> do
+  st' <- writeTVarTx st tv val
+  ok st' ()
